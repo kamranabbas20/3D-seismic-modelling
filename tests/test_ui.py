@@ -303,3 +303,16 @@ def test_an_all_zero_trace_is_not_labelled():
     figure = ui.trace_figure(y, {"flat": np.zeros(32), "also": np.zeros(32)},
                              ylabel="depth (m)")
     assert not figure.layout.annotations
+
+
+def test_labels_are_dropped_when_the_extrema_coincide():
+    """Four near-identical traces peak on the same event; no anchor separates
+    them, so overprinting is worse than leaving the legend to do the work."""
+    y = np.linspace(0.0, 1.0, 100)
+    base = np.zeros(100)
+    base[40] = 1.0
+    figure = ui.trace_figure(
+        y, {"baseline": base, "combined": base * 1.001, "pressure_only": base * 0.999},
+        ylabel="two-way time (s)")
+    assert not figure.layout.annotations
+    assert all(trace.showlegend for trace in figure.data)   # identity survives

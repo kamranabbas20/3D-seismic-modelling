@@ -221,30 +221,45 @@ def trace_figure(y, series: dict[str, np.ndarray], *, ylabel: str,
     The transpose of :func:`series_figure`, because a trace is read against
     a downward axis - the same convention as every section in this app, so
     an event at 1,200 m sits at the same height as it does on a slice.
-    Identity is never colour-alone: two or more traces carry a legend and
-    each is labelled at its deep end.
+
+    Direct labels are anchored at each trace's own extremum rather than at
+    its end: a trace tails off to zero, so end labels would all land on the
+    one point where the series are guaranteed to agree.  When the extrema
+    themselves coincide - four earth models differing by a few percent peak
+    on the same event - no anchor separates them, and the labels are
+    dropped rather than overprinted.  The legend still carries identity, so
+    it is never left to colour alone.
     """
     fig = go.Figure()
     colours = colours or {}
     multiple = len(series) > 1
+    anchors = []
     for i, (name, values) in enumerate(series.items()):
         colour = colours.get(name) or theme.SERIES[i % len(theme.SERIES)]
         fig.add_trace(go.Scatter(
             x=values, y=y, mode="lines", name=name, showlegend=multiple,
             line=dict(color=colour, width=2),
             hovertemplate=f"{name}<br>%{{y:,.4g}}<br>%{{x:,.4g}}<extra></extra>"))
-        # Anchor the label at the trace's own extremum, not at its end: a
-        # trace tails off to zero, so end labels would all pile onto the
-        # same point and render as one unreadable smear.
         finite = np.isfinite(values)
         if multiple and np.any(finite) and np.nanmax(np.abs(values)) > 0:
             peak = int(np.nanargmax(np.abs(np.where(finite, values, 0.0))))
-            side = "left" if values[peak] >= 0 else "right"
-            pad = " " if side == "left" else ""
-            fig.add_annotation(x=values[peak], y=y[peak],
-                               text=f"{pad}{name}{'' if side == 'left' else ' '}",
-                               showarrow=False, xanchor=side, yanchor="middle",
-                               font=dict(color=theme.INK_SECONDARY, size=10))
+            anchors.append((name, float(values[peak]), float(y[peak])))
+
+    if anchors:
+        span_x = max(abs(a[1]) for a in anchors) or 1.0
+        span_y = (float(np.nanmax(y)) - float(np.nanmin(y))) or 1.0
+        crowded = any(
+            abs(a[1] - b[1]) < 0.04 * span_x and abs(a[2] - b[2]) < 0.04 * span_y
+            for i, a in enumerate(anchors) for b in anchors[i + 1:])
+        if not crowded:
+            for name, x, at in anchors:
+                side = "left" if x >= 0 else "right"
+                fig.add_annotation(
+                    x=x, y=at,
+                    text=f" {name}" if side == "left" else f"{name} ",
+                    showarrow=False, xanchor=side, yanchor="middle",
+                    font=dict(color=theme.INK_SECONDARY, size=10))
+
     if zero_line:
         fig.add_vline(x=0.0, line=dict(color=theme.GRIDLINE, width=1))
     fig.update_layout(**theme.plotly_layout(
