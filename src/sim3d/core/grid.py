@@ -194,12 +194,27 @@ class DomainSet:
         _require_contained(self.target, self.propagation, "target", "propagation")
 
     def summary(self) -> str:
-        """Multi-line report of all three domains and their cell counts."""
+        """Multi-line report of all three domains, by physical volume.
+
+        The ratios compare cubic metres, not cell counts: the propagation
+        grid is normally finer than the geological one, so a cell-count
+        ratio would say the wave-equation domain is *larger* than the model
+        it was cut from.
+        """
+        def volume(grid: Grid3D) -> float:
+            lx, ly, lz = grid.extent
+            return lx * ly * lz
+
         lines = ["Domain hierarchy (spec section 6):"]
         for name in ("geology", "propagation", "target"):
             lines.append(f"  {name:12s} {getattr(self, name).describe()}")
-        ratio = self.propagation.n_cells / max(self.geology.n_cells, 1)
-        lines.append(f"  propagation domain is {100 * ratio:.1f}% of the geological volume")
+        geology_volume = max(volume(self.geology), 1e-12)
+        lines.append(
+            f"  propagation is {100 * volume(self.propagation) / geology_volume:.1f}% "
+            f"of the geological volume; target is "
+            f"{100 * volume(self.target) / max(volume(self.propagation), 1e-12):.1f}% "
+            f"of the propagation volume"
+        )
         return "\n".join(lines)
 
 

@@ -13,7 +13,7 @@ predicted runtime with no benchmark behind it would be an invention.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from enum import Enum
 
 import numpy as np
@@ -55,6 +55,8 @@ class CostEstimate:
     propagations_per_shot: int
     wavefield_snapshots: int
     solver_state_bytes: int
+    #: Earth models simulated independently (baseline, pressure-only, ...).
+    n_scenarios: int = 1
 
     # -- derived sizes ---------------------------------------------------
     @property
@@ -62,14 +64,20 @@ class CostEstimate:
         return self.grid.n_cells
 
     @property
+    def propagations(self) -> int:
+        """Total wavefield propagations across the whole experiment."""
+        return self.n_sources * self.propagations_per_shot * self.n_scenarios
+
+    @property
     def cell_steps(self) -> float:
         """Total cell updates across the whole experiment."""
-        return float(self.n_cells) * self.n_time_steps * self.n_sources * self.propagations_per_shot
+        return float(self.n_cells) * self.n_time_steps * self.propagations
 
     @property
     def shot_data_bytes(self) -> int:
-        """Size of the recorded gathers for the whole survey."""
-        return self.n_sources * self.n_receivers * self.n_time_steps * self.dtype_bytes
+        """Size of the recorded gathers for every scenario."""
+        return (self.n_sources * self.n_receivers * self.n_time_steps
+                * self.dtype_bytes * self.n_scenarios)
 
     @property
     def checkpoint_bytes(self) -> int:
@@ -108,8 +116,9 @@ class CostEstimate:
             f"  time steps        {self.n_time_steps:,}",
             f"  sources           {self.n_sources:,}",
             f"  receivers         {self.n_receivers:,}",
-            f"  propagations      {self.propagations_per_shot} per shot "
-            f"({self.n_sources * self.propagations_per_shot:,} total)",
+            f"  earth models      {self.n_scenarios} simulated independently",
+            f"  propagations      {self.propagations_per_shot} per shot per model "
+            f"({self.propagations:,} total)",
             f"  cell-steps        {self.cell_steps:.3g}",
             f"  shot data         {self.shot_data_bytes / GIB:.3f} GiB",
             f"  wavefield store   {self.checkpoint_bytes / GIB:.3f} GiB "
@@ -197,14 +206,22 @@ def default_alternatives(estimate: CostEstimate) -> list[str]:
 
 def estimate_experiment(grid: Grid3D, n_time_steps: int, n_sources: int, n_receivers: int,
                         solver_state_bytes: int, wavefield_snapshots: int = 0,
-                        propagations_per_shot: int = 1, dtype_bytes: int = 4) -> CostEstimate:
-    """Build a :class:`CostEstimate` for a survey."""
+                        propagations_per_shot: int = 1, dtype_bytes: int = 4,
+                        n_scenarios: int = 1) -> CostEstimate:
+    """Build a :class:`CostEstimate` for a survey.
+
+    ``propagations_per_shot`` is per earth model: 1 for forward modelling
+    alone, 3 once RTM adds a source and a receiver propagation.
+    ``n_scenarios`` is how many earth models are run independently, which
+    for a full 4D decomposition is four.
+    """
     return CostEstimate(
         grid=grid, n_time_steps=int(n_time_steps), n_sources=int(n_sources),
         n_receivers=int(n_receivers), dtype_bytes=int(dtype_bytes),
         propagations_per_shot=int(propagations_per_shot),
         wavefield_snapshots=int(wavefield_snapshots),
         solver_state_bytes=int(solver_state_bytes),
+        n_scenarios=int(n_scenarios),
     )
 
 

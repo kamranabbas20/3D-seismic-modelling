@@ -22,7 +22,7 @@ hoping they stay parallel.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 import numpy as np
 
@@ -31,7 +31,7 @@ from ..core.grid import Grid3D
 from .facies import FACIES, Facies, get_facies
 from .faults import FaultSet
 from .heterogeneity import HeterogeneitySpec, random_field
-from .surfaces import Flat, Surface
+from .surfaces import Surface
 
 
 @dataclass

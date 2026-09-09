@@ -98,7 +98,15 @@ class _WellCentred:
 
     def shape_field(self, grid, well: Well, faults: FaultSet | None,
                     scale: float = 1.0) -> np.ndarray:
-        """Normalised 0-1 influence of this perturbation over the grid."""
+        """Normalised 0-1 influence of this perturbation over the grid.
+
+        ``scale`` grows the radii with pseudo-time.  At ``scale <= 0`` the
+        perturbation does not exist at all: shrinking the radii towards zero
+        instead would leave a one-cell spike at the well, which is not a
+        small flood front but a different object entirely.
+        """
+        if scale <= 0.0:
+            return np.zeros(grid.shape)
         x, y, z = np.meshgrid(grid.axis(0), grid.axis(1), grid.axis(2), indexing="ij")
         zc = 0.5 * sum(self.z_range) if self.z_range else well.position[2]
         dz = z - zc
@@ -288,22 +296,28 @@ def _rebalance(baseline: ReservoirState, sw, so, sg, grew: str):
     Doing the bookkeeping explicitly - rather than renormalising all three -
     keeps the displacement physical: injected water displaces oil, and gas
     comes out of oil, not out of the connate water.
+
+    Cells that did not change are left untouched rather than recomputed, so
+    a scenario that perturbs nothing returns the baseline bit for bit. That
+    exactness is what makes the section 131 null test a real check on the
+    pipeline instead of a check on floating-point luck.
     """
     if grew == "sw":
         gain = np.maximum(sw - baseline.sw, 0.0)
         from_oil = np.minimum(gain, so)
-        so = so - from_oil
         from_gas = np.minimum(gain - from_oil, sg)
-        sg = sg - from_gas
-        sw = baseline.sw + from_oil + from_gas + np.maximum(sw - baseline.sw - gain, 0.0)
-        sw = 1.0 - so - sg
+        touched = gain > 0.0
+        so = np.where(touched, so - from_oil, so)
+        sg = np.where(touched, sg - from_gas, sg)
+        sw = np.where(touched, 1.0 - so - sg, sw)
     else:
         gain = np.maximum(sg - baseline.sg, 0.0)
         from_oil = np.minimum(gain, so)
-        so = so - from_oil
-        from_water = np.minimum(gain - from_oil, np.maximum(sw - 0.0, 0.0))
-        sw = sw - from_water
-        sg = 1.0 - sw - so
+        from_water = np.minimum(gain - from_oil, np.maximum(sw, 0.0))
+        touched = gain > 0.0
+        so = np.where(touched, so - from_oil, so)
+        sw = np.where(touched, sw - from_water, sw)
+        sg = np.where(touched, 1.0 - sw - so, sg)
     total = sw + so + sg
     if np.any(np.abs(total - 1.0) > 1e-9):
         raise ValidationError(

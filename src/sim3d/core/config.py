@@ -1,0 +1,312 @@
+"""Experiment configuration from YAML or JSON (spec sections 101-102, 117).
+
+Every experiment is reproducible from its configuration file: the geology,
+the wells, the reservoir scenario, the rock-physics models, the solver, the
+acquisition and the imaging settings are all here, and nothing that affects
+a result is set anywhere else.
+
+Two rules make the file trustworthy rather than merely present:
+
+* **Unknown keys are errors.**  A typo in ``dry_frame_model`` must not be
+  silently ignored, leaving the run to proceed with a default the user
+  never chose.
+* **The content hash covers exactly the scientific inputs.**  Display
+  settings and output paths are excluded, so changing a colour map does not
+  invalidate a cached migration, and changing a wavelet frequency does.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import json
+from dataclasses import asdict, dataclass, field, fields, is_dataclass
+from pathlib import Path
+from typing import Any, get_type_hints
+
+import yaml
+
+from .errors import ConfigError
+from .grid import DomainSet, Grid3D
+
+
+def _build(cls, data: dict[str, Any], path: str = ""):
+    """Instantiate a dataclass from a mapping, rejecting unknown keys.
+
+    ``from __future__ import annotations`` turns field types into strings, so
+    the nested dataclasses have to be recovered with ``get_type_hints``
+    rather than read off ``field.type`` directly.
+    """
+    if data is None:
+        return cls()
+    if not isinstance(data, dict):
+        raise ConfigError(
+            f"{path or cls.__name__} must be a mapping, got {type(data).__name__}"
+        )
+    known = {f.name for f in fields(cls)}
+    unknown = set(data) - known
+    if unknown:
+        raise ConfigError(
+            f"unknown key(s) {sorted(unknown)} in {path or cls.__name__}; "
+            f"valid keys are {sorted(known)}. sim3d does not ignore unrecognised "
+            f"settings, because a typo would otherwise run with a default you "
+            f"did not choose."
+        )
+    hints = get_type_hints(cls)
+    kwargs = {}
+    for f in fields(cls):
+        if f.name not in data:
+            continue
+        value = data[f.name]
+        annotation = hints.get(f.name, f.type)
+        where = f"{path}.{f.name}" if path else f.name
+        if is_dataclass(annotation):
+            if not isinstance(value, dict):
+                raise ConfigError(
+                    f"{where} must be a mapping of settings, got "
+                    f"{type(value).__name__}"
+                )
+            kwargs[f.name] = _build(annotation, value, where)
+        else:
+            kwargs[f.name] = value
+    return cls(**kwargs)
+
+
+@dataclass
+class ProjectConfig:
+    name: str = "mechanistic_4d"
+    description: str = ""
+    seed: int = 1
+
+
+@dataclass
+class DomainConfig:
+    """The three-domain hierarchy of spec section 6."""
+
+    geology_bounds: list = field(default_factory=lambda: [[0, 3000], [0, 3000], [0, 2200]])
+    geology_spacing: list = field(default_factory=lambda: [25.0, 25.0, 10.0])
+    propagation_bounds: list | None = None
+    propagation_spacing: list | None = None
+    target_bounds: list | None = None
+
+    def build(self) -> DomainSet:
+        geology = Grid3D.from_bounds(self.geology_bounds, self.geology_spacing)
+        prop_bounds = self.propagation_bounds or self.geology_bounds
+        prop_spacing = self.propagation_spacing or self.geology_spacing
+        propagation = Grid3D.from_bounds(prop_bounds, prop_spacing)
+        target = Grid3D.from_bounds(self.target_bounds or prop_bounds, prop_spacing)
+        return DomainSet(geology=geology, propagation=propagation, target=target)
+
+
+@dataclass
+class GeologyConfig:
+    template: str = "anticline"
+    parameters: dict = field(default_factory=dict)
+
+
+@dataclass
+class WellsConfig:
+    pattern: str = "demonstration"
+    parameters: dict = field(default_factory=dict)
+    min_spacing: float = 500.0
+
+
+@dataclass
+class BaselineConfig:
+    sw: float = 0.30
+    sg: float = 0.0
+    temperature: float = 80.0
+    pressure_gradient: float = 10500.0
+    datum_pressure: float = 101325.0
+
+
+@dataclass
+class ScenarioConfig:
+    name: str = "monitor"
+    time_state: str = "T4"
+    pressure: list = field(default_factory=list)
+    water_fronts: list = field(default_factory=list)
+    gas: list = field(default_factory=list)
+
+
+@dataclass
+class ReservoirConfig:
+    baseline: BaselineConfig = field(default_factory=BaselineConfig)
+    scenario: ScenarioConfig = field(default_factory=ScenarioConfig)
+
+
+@dataclass
+class RockPhysicsSection:
+    mineral_model: str = "vrh"
+    dry_frame_model: str = "soft_sand"
+    fluid_mixing: str = "wood"
+    brie_exponent: float = 3.0
+    critical_porosity: float = 0.40
+    coordination: float = 9.0
+    pressure_model: str = "hertz_mindlin"
+    biot: float = 1.0
+    temperature: float = 80.0
+    salinity: float = 35000.0
+    api: float = 30.0
+    gas_gravity: float = 0.65
+    gor: float = 100.0
+    min_effective_pressure: float = 1.0e6
+    overburden_density: float = 2300.0
+
+
+@dataclass
+class SolverConfig:
+    physics: str = "acoustic"
+    spatial_order: int = 8
+    courant_safety: float = 0.90
+    pml_nodes: int = 12
+    pml_r0: float = 1.0e-5
+    dtype: str = "float32"
+    backend: str = "auto"
+    record_length: float = 2.0
+
+
+@dataclass
+class SourceConfig:
+    type: str = "ricker"
+    frequency: float = 20.0
+    #: Spectral fraction defining the practical Fmax used for grid checks.
+    bandwidth_fraction: float = 0.05
+
+
+@dataclass
+class AcquisitionConfig:
+    type: str = "OBN"
+    centre: list | None = None
+    receiver_spacing: float = 200.0
+    receiver_extent: float = 1600.0
+    source_spacing: float = 150.0
+    source_line_spacing: float = 300.0
+    source_extent: float = 1600.0
+    receiver_depth: float = 400.0
+    source_depth: float = 380.0
+    source_decimation: int = 1
+    receiver_decimation: int = 1
+
+
+@dataclass
+class ImagingConfig:
+    method: str = "RTM"
+    imaging_condition: str = "source_normalized"
+    time_decimation: int | None = None
+    laplacian_filter: bool = True
+    epsilon: float = 1.0e-4
+    #: Migrate with a perturbed velocity: 1.0 is the true model.
+    velocity_scale: float = 1.0
+    #: Gaussian smoothing of the migration velocity, in metres.
+    velocity_smoothing: float = 0.0
+
+
+@dataclass
+class FourDConfig:
+    scenarios: list = field(
+        default_factory=lambda: ["baseline", "pressure_only", "saturation_only", "combined"])
+
+
+@dataclass
+class BudgetConfig:
+    max_ram_gb: float = 8.0
+    max_disk_gb: float = 200.0
+    max_cost_class: str = "HIGH"
+
+
+@dataclass
+class OutputConfig:
+    """Excluded from the content hash: changing these cannot change the science."""
+
+    directory: str = "runs"
+    save_snapshots: list = field(default_factory=list)
+    save_gathers: bool = True
+
+
+@dataclass
+class ExperimentConfig:
+    """The complete, reproducible definition of one experiment."""
+
+    project: ProjectConfig = field(default_factory=ProjectConfig)
+    domains: DomainConfig = field(default_factory=DomainConfig)
+    geology: GeologyConfig = field(default_factory=GeologyConfig)
+    wells: WellsConfig = field(default_factory=WellsConfig)
+    reservoir: ReservoirConfig = field(default_factory=ReservoirConfig)
+    rock_physics: RockPhysicsSection = field(default_factory=RockPhysicsSection)
+    solver: SolverConfig = field(default_factory=SolverConfig)
+    source: SourceConfig = field(default_factory=SourceConfig)
+    acquisition: AcquisitionConfig = field(default_factory=AcquisitionConfig)
+    imaging: ImagingConfig = field(default_factory=ImagingConfig)
+    fourd: FourDConfig = field(default_factory=FourDConfig)
+    budget: BudgetConfig = field(default_factory=BudgetConfig)
+    output: OutputConfig = field(default_factory=OutputConfig)
+
+    #: Sections that do not affect any scientific result.
+    NON_SCIENTIFIC = ("output",)
+
+    # -- serialisation ---------------------------------------------------
+    def to_dict(self) -> dict:
+        return asdict(self)
+
+    def scientific_dict(self) -> dict:
+        """The configuration with non-scientific sections removed."""
+        return {k: v for k, v in self.to_dict().items() if k not in self.NON_SCIENTIFIC}
+
+    def content_hash(self) -> str:
+        """SHA-256 of the canonical scientific configuration.
+
+        Two experiments with the same hash must produce the same numbers, so
+        this is what the cache and the provenance record key on.
+        """
+        canonical = json.dumps(self.scientific_dict(), sort_keys=True,
+                               separators=(",", ":"), default=str)
+        return hashlib.sha256(canonical.encode()).hexdigest()
+
+    @property
+    def short_hash(self) -> str:
+        return self.content_hash()[:12]
+
+    def save(self, path: str | Path) -> Path:
+        path = Path(path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        text = yaml.safe_dump(self.to_dict(), sort_keys=False, default_flow_style=False)
+        path.write_text(text)
+        return path
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "ExperimentConfig":
+        return _build(cls, data)
+
+    @classmethod
+    def load(cls, path: str | Path) -> "ExperimentConfig":
+        path = Path(path)
+        if not path.exists():
+            raise ConfigError(f"configuration file not found: {path}")
+        text = path.read_text()
+        data = json.loads(text) if path.suffix == ".json" else yaml.safe_load(text)
+        if not isinstance(data, dict):
+            raise ConfigError(f"{path} does not contain a mapping at the top level")
+        return cls.from_dict(data)
+
+    def describe(self) -> str:
+        domains = self.domains.build()
+        return "\n".join([
+            f"Experiment '{self.project.name}' [{self.short_hash}]",
+            domains.summary(),
+            f"  geology template  {self.geology.template} {self.geology.parameters}",
+            f"  well pattern      {self.wells.pattern}",
+            f"  scenario          {self.reservoir.scenario.name} "
+            f"at {self.reservoir.scenario.time_state}",
+            f"  rock physics      {self.rock_physics.mineral_model} / "
+            f"{self.rock_physics.dry_frame_model} / {self.rock_physics.fluid_mixing} / "
+            f"{self.rock_physics.pressure_model}",
+            f"  solver            {self.solver.physics}, order "
+            f"{self.solver.spatial_order}, backend {self.solver.backend}",
+            f"  source            {self.source.type} at {self.source.frequency:g} Hz",
+            f"  acquisition       {self.acquisition.type}, nodes "
+            f"{self.acquisition.receiver_spacing:g} m, shots "
+            f"{self.acquisition.source_spacing:g} m",
+            f"  imaging           {self.imaging.method}, "
+            f"{self.imaging.imaging_condition}",
+            f"  4D scenarios      {', '.join(self.fourd.scenarios)}",
+        ])

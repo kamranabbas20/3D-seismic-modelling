@@ -38,15 +38,14 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Callable, Iterable, Sequence
+from typing import Callable, Sequence
 
 import numpy as np
 
 from ..core.errors import ConfigError
 from ..core.grid import Grid3D
 from ..wave.acoustic import AcousticModel, AcousticSolver, ShotRecord, SolverSettings
-from ..wave.interp import PointSet
-from ..wave.sources import MultiPointSource, PointSource, SourceTerm
+from ..wave.sources import MultiPointSource, PointSource
 from .store import WavefieldStore, safe_decimation
 
 IMAGING_CONDITIONS = ("crosscorrelation", "source_normalized")
