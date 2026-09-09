@@ -213,6 +213,42 @@ def series_figure(x, series: dict[str, np.ndarray], *, xlabel: str, ylabel: str,
     return fig
 
 
+def trace_figure(y, series: dict[str, np.ndarray], *, ylabel: str,
+                 xlabel: str = "amplitude", height: int = 460,
+                 colours=None, zero_line: bool = True) -> go.Figure:
+    """Vertical seismic traces: amplitude across, time or depth down.
+
+    The transpose of :func:`series_figure`, because a trace is read against
+    a downward axis - the same convention as every section in this app, so
+    an event at 1,200 m sits at the same height as it does on a slice.
+    Identity is never colour-alone: two or more traces carry a legend and
+    each is labelled at its deep end.
+    """
+    fig = go.Figure()
+    colours = colours or {}
+    multiple = len(series) > 1
+    for i, (name, values) in enumerate(series.items()):
+        colour = colours.get(name) or theme.SERIES[i % len(theme.SERIES)]
+        fig.add_trace(go.Scatter(
+            x=values, y=y, mode="lines", name=name, showlegend=multiple,
+            line=dict(color=colour, width=2),
+            hovertemplate=f"{name}<br>%{{y:,.4g}}<br>%{{x:,.4g}}<extra></extra>"))
+        finite = np.isfinite(values)
+        if multiple and np.any(finite):
+            last = int(np.max(np.where(finite)[0]))
+            fig.add_annotation(x=values[last], y=y[last], text=f" {name}",
+                               showarrow=False, xanchor="left", yanchor="top",
+                               font=dict(color=theme.INK_SECONDARY, size=10))
+    if zero_line:
+        fig.add_vline(x=0.0, line=dict(color=theme.GRIDLINE, width=1))
+    fig.update_layout(**theme.plotly_layout(
+        height=height, margin=dict(l=64, r=76, t=40 if multiple else 16, b=44),
+        xaxis_title=xlabel, yaxis_title=ylabel,
+        yaxis=dict(autorange="reversed"),
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, x=0)))
+    return fig
+
+
 def bar_figure(centres, counts, *, xlabel: str, ylabel: str, width: float | None = None,
                height: int = 340, colour: str | None = None) -> go.Figure:
     """Histogram as bars.

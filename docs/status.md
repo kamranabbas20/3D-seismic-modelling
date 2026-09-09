@@ -79,6 +79,7 @@ Section numbers refer to the project specification. Three states:
 | 80 | Imaging-condition extensions | deferred | Cross-correlation and source-normalised only |
 | 81 | Kirchhoff | deferred | Named and refused |
 | 82–83 | Preview mode and physics transparency | done | Labelled everywhere |
+| — | Sparse-synthetic mode (K vertical traces) | done | `imaging.method: sparse_synthetic`; layouts wells/grid/points; pinned equal to the full cube at the same column |
 | 84 | Light processing | done | Band-pass, mutes, display-only gain |
 | 85 | Baseline/monitor repeatability | done | One pinned `dt`, one migration operator |
 | 86 | Non-repeatability | deferred | Noise and geometry perturbation not yet modelled |

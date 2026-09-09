@@ -54,6 +54,11 @@ STAGES: tuple[Stage, ...] = (
     Stage("gathers", sections=("solver", "source"),
           depends=("rockphysics", "acquisition"), cost="expensive"),
     Stage("images", sections=("imaging",), depends=("gathers",), cost="expensive"),
+    # The sparse synthetic reads the imaging section for its trace layout but
+    # not the gathers: it never propagates a wavefield, which is exactly why
+    # it is cheap and why it depends on the wells that name its traces.
+    Stage("synthetic", sections=("synthetic", "source", "solver"),
+          depends=("rockphysics", "wells"), cost="cheap"),
     Stage("fourd", depends=("images", "rockphysics"), cost="cheap"),
 )
 

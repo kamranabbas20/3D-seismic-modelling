@@ -12,6 +12,7 @@ science lives here.
     sim3d plan       model.yaml    the cost estimate and the budget decision
     sim3d benchmark                measure this machine's throughput
     sim3d preview    model.yaml    fast 1D convolution screening
+    sim3d synthetic  model.yaml    K vertical 1D synthetic traces
     sim3d simulate   model.yaml    full-wave shot gathers, one set per earth model
     sim3d migrate    model.yaml    3D RTM of every scenario
     sim3d decompose  model.yaml    the 4D difference and the interaction term
@@ -31,6 +32,7 @@ from .core.errors import Sim3DError
 from .core.planning import measure_throughput
 from .experiments.pipeline import Pipeline
 from .fourd.decomposition import describe as describe_decomposition
+from .fourd.metrics import nrms
 from .fourd.scenarios import SCENARIO_NAMES
 from .validation.physics import physics_table
 
@@ -66,7 +68,7 @@ def cmd_describe(args) -> int:
 
 
 def cmd_physics(args) -> int:
-    modes = ["convolution", "acoustic_fd", "rtm"]
+    modes = ["convolution", "sparse_synthetic", "acoustic_fd", "rtm"]
     _heading("Physics of each simulation mode (spec section 83)")
     print(physics_table(modes))
     return 0
@@ -196,6 +198,35 @@ def cmd_preview(args) -> int:
     return 0
 
 
+def cmd_synthetic(args) -> int:
+    pipeline = _load(args.config)
+    _heading("Sparse vertical synthetics")
+    synthetics = pipeline.synthetic()
+    base = synthetics["baseline"]
+    print(f"  {base.label}")
+    print(f"  {base.n_traces} traces, {base.times.size} samples at "
+          f"{(base.times[1] - base.times[0]) * 1e3:.2f} ms\n")
+    for location in base.locations:
+        print(f"    {location.describe()}")
+    print()
+    for name in SCENARIO_NAMES[1:]:
+        if name not in synthetics:
+            continue
+        d = synthetics[name].traces - base.traces
+        print(f"  4D difference {name:16s} RMS {np.sqrt(np.mean(d**2)):.6e}")
+    print("\n  per trace, NRMS against baseline (%)")
+    header = "    " + "".join(f"{n:>16s}" for n in base.names)
+    print(header)
+    for name in SCENARIO_NAMES[1:]:
+        if name not in synthetics:
+            continue
+        cells = "".join(
+            f"{nrms(base.traces[i], synthetics[name].traces[i]):>16.3f}"
+            for i in range(base.n_traces))
+        print(f"    {name:16s}{cells}")
+    return 0
+
+
 def cmd_simulate(args) -> int:
     pipeline = _load(args.config)
     if pipeline.qc().failed and not args.force:
@@ -319,6 +350,7 @@ def build_parser() -> argparse.ArgumentParser:
     gui.add_argument("--headless", action="store_true",
                      help="do not try to open a browser")
     add("preview", cmd_preview, "fast 1D convolution screening")
+    add("synthetic", cmd_synthetic, "K vertical 1D synthetic traces")
     add("simulate", cmd_simulate, "model shot gathers for every earth model") \
         .add_argument("--force", action="store_true", help="proceed despite failed QC")
     add("migrate", cmd_migrate, "run 3D RTM on every scenario") \

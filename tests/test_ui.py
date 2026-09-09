@@ -258,3 +258,26 @@ def test_every_pressure_field_is_displayed_in_psi():
         assert unit == "psi"
         assert scale == pytest.approx(PSI)
     assert not [f for f, (_, unit, _) in theme.DISPLAY.items() if unit == "bar"]
+
+
+def test_a_trace_is_drawn_against_a_downward_axis():
+    """A trace is read top-down, like every other section in the app."""
+    y = np.linspace(0.0, 1.0, 64)
+    figure = ui.trace_figure(y, {"baseline": np.sin(y * 20)}, ylabel="two-way time (s)")
+    assert figure.layout.yaxis.autorange == "reversed"
+    assert figure.data[0].y[0] == pytest.approx(0.0)
+
+
+def test_two_traces_carry_a_legend_and_end_labels():
+    y = np.linspace(0.0, 1.0, 32)
+    figure = ui.trace_figure(y, {"baseline": np.zeros(32), "combined": np.ones(32)},
+                             ylabel="depth (m)")
+    assert all(trace.showlegend for trace in figure.data)
+    assert len(figure.layout.annotations) == 2
+
+
+def test_one_trace_needs_no_legend():
+    y = np.linspace(0.0, 1.0, 32)
+    figure = ui.trace_figure(y, {"baseline": np.zeros(32)}, ylabel="depth (m)")
+    assert not figure.data[0].showlegend
+    assert not figure.layout.annotations

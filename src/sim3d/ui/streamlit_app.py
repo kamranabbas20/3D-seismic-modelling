@@ -34,11 +34,12 @@ from sim3d.core.errors import Sim3DError
 from sim3d.core.graph import explain as explain_dependencies
 from sim3d.core.units import PSI, pa_to_psi, psi_to_pa, si_to_stb_per_day
 from sim3d.io import ScenarioStore, ViewState
+from sim3d.processing.sparse import LAYOUTS
 from sim3d.ui import view3d
 from sim3d.wells.completion import layer_intersections, resolve_completions
 from sim3d.experiments.pipeline import Pipeline
 from sim3d.fourd.decomposition import nonlinearity_ratio
-from sim3d.fourd.metrics import radial_profile
+from sim3d.fourd.metrics import nrms, radial_profile
 from sim3d.fourd.scenarios import SCENARIO_NAMES
 from sim3d.ui import components as ui
 from sim3d.ui import theme
@@ -489,6 +490,8 @@ def page_simulation() -> None:
             st.error(str(exc))
         progress.empty()
 
+    _sparse_section(pipe)
+
     if not pipe.result.gathers:
         st.info("No shot gathers yet. Modelling four earth models is minutes of "
                 "work, so it happens only when you ask for it.")
@@ -515,6 +518,71 @@ def page_simulation() -> None:
             pipe.result.images[which].image, grid, point,
             title=f"RTM — {which}", kind="diverging", unit="amplitude",
             wells=pipe.wells()), width="stretch")
+
+
+def _sparse_section(pipe) -> None:
+    """The second seismic mode: K vertical synthetics instead of a migration."""
+    st.subheader("Sparse vertical synthetics")
+    cfg = config().synthetic
+    a, b, c = st.columns([1, 1, 2])
+    layout = a.selectbox("Trace layout", list(LAYOUTS),
+                         index=list(LAYOUTS).index(cfg.layout),
+                         help="Where the K traces go. 'wells' answers the "
+                              "question the wells were placed to ask.")
+    count = b.number_input("K (lattice only)", 1, 400, int(cfg.count), 1,
+                           disabled=(layout != "grid"))
+    if layout != cfg.layout or int(count) != cfg.count:
+        cfg.layout, cfg.count = layout, int(count)
+        invalidate()
+    c.caption("Seconds, not minutes: no wavefield is propagated. These are "
+              "1D normal-incidence traces, so they carry no lateral "
+              "propagation, no offset, no migration — and are never an image.")
+
+    if st.button("Run sparse synthetic"):
+        try:
+            stage("Building vertical synthetics", pipe.synthetic)
+        except Sim3DError as exc:
+            st.error(str(exc))
+
+    synthetics = pipe.result.synthetics
+    if not synthetics:
+        return
+    base = synthetics["baseline"]
+    st.caption(base.label)
+
+    which = st.selectbox("Trace", list(base.names), key="sparse_trace")
+    i = base.index(which)
+    domain = st.radio("Axis", ["time", "depth"], horizontal=True, key="sparse_axis")
+    if domain == "time":
+        axis, ylabel = base.times, "two-way time (s)"
+        curves = {n: synthetics[n].traces[i] for n in synthetics}
+    else:
+        axis, ylabel = base.depths, "depth (m)"
+        curves = {n: synthetics[n].depth_traces[i] for n in synthetics}
+    st.plotly_chart(ui.trace_figure(
+        axis, curves, ylabel=ylabel,
+        colours=theme.SCENARIO_COLOUR), width="stretch")
+
+    differences = {n: curves[n] - curves["baseline"]
+                   for n in curves if n != "baseline"}
+    if differences:
+        st.markdown("**Difference from baseline**")
+        st.plotly_chart(ui.trace_figure(
+            axis, differences, ylabel=ylabel,
+            colours=theme.SCENARIO_COLOUR), width="stretch")
+
+    rows = {}
+    for name in list(synthetics)[1:]:
+        rows[name] = {loc.name: round(nrms(base.traces[k],
+                                           synthetics[name].traces[k]), 3)
+                      for k, loc in enumerate(base.locations)}
+    if rows:
+        st.markdown("**NRMS against baseline, per trace (%)**")
+        st.dataframe(rows, width="stretch")
+        st.caption("Larger than the NRMS of a migrated volume, and not "
+                   "comparable with it: this is measured on the trace at the "
+                   "well, where the change is, while the volume figure is "
+                   "diluted by every cell that did not change.")
 
 
 def page_fourd() -> None:

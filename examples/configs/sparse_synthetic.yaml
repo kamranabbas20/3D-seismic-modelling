@@ -1,18 +1,25 @@
-# A deliberately small end-to-end demonstration.
+# The sparse-synthetic mode: K vertical traces instead of a migration.
 #
-# One injector and one producer 600 m apart, a flat reservoir, and a sparse
-# OBN survey - sized so that the full chain (four earth models, full-wave
-# modelling, RTM, and the 4D decomposition) completes in minutes on a
-# laptop CPU rather than overnight.
+# Same earth as demo_small.yaml - one injector, one producer, a flat
+# reservoir - but the seismic step is `sim3d synthetic` rather than
+# simulate + migrate. No wavefield is propagated, so the seismic leg costs
+# tens of milliseconds instead of the ten or so minutes the RTM takes, and
+# the whole run is dominated by the flow simulation upstream.
 #
-# It is a demonstration of the *workflow*, not a research-resolution result:
-# 8 Hz is a low peak frequency and nine shots is a very sparse survey.
-# `sim3d plan examples/configs/research_standard.yaml` shows what a
-# research-resolution run of the same workflow actually costs.
+# What you get: a vertical normal-incidence trace at each trace location,
+# for all four earth models, with the 4D difference and a per-trace NRMS.
+#
+# What you do not get, and cannot: anything away from those columns, and
+# anything the acquisition and the migration operator do to the signal -
+# no lateral propagation, no diffraction, no offset, no illumination. Use
+# this to screen many rock-physics cases, then migrate the few that matter.
+#
+#     sim3d synthetic examples/configs/sparse_synthetic.yaml
+
 
 project:
-  name: demo_small
-  description: Minimal end-to-end injector/producer 4D experiment
+  name: sparse_synthetic
+  description: K vertical 1D synthetic traces instead of a migration
   seed: 1
 
 domains:
@@ -99,15 +106,13 @@ imaging:
   # second seismic mode, which skips propagation entirely and builds K
   # vertical 1D traces instead - seconds rather than minutes, and a
   # screening result rather than an image.
-  method: RTM
+  method: sparse_synthetic
   imaging_condition: source_normalized
   laplacian_filter: true
 
 synthetic:
-  # Where the sparse mode puts its K traces. 'wells' is one trace per well,
-  # which is the layout that answers the question the wells were placed to
-  # ask; 'grid' spreads exactly `count` over the target; 'points' takes an
-  # explicit list of [x, y].
+  # One trace per well. Switch to 'grid' with a count to spread exactly K
+  # traces over the target instead, or 'points' for explicit [x, y] pairs.
   layout: wells
   count: 9
   points: []

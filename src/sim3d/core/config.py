@@ -27,6 +27,11 @@ import yaml
 
 from .errors import ConfigError
 from .grid import DomainSet, Grid3D
+# Safe: nothing under ``processing`` or ``wave`` imports this module back.
+from ..processing.sparse import LAYOUTS
+
+#: The seismic modes ``imaging.method`` accepts.
+IMAGING_METHODS = ("RTM", "sparse_synthetic")
 
 
 def _build(cls, data: dict[str, Any], path: str = ""):
@@ -244,6 +249,9 @@ class AcquisitionConfig:
 
 @dataclass
 class ImagingConfig:
+    #: ``RTM`` migrates modelled gathers; ``sparse_synthetic`` skips
+    #: propagation entirely and builds K vertical 1D traces instead, which
+    #: is a screening mode and never an image.
     method: str = "RTM"
     imaging_condition: str = "source_normalized"
     time_decimation: int | None = None
@@ -253,6 +261,34 @@ class ImagingConfig:
     velocity_scale: float = 1.0
     #: Gaussian smoothing of the migration velocity, in metres.
     velocity_smoothing: float = 0.0
+
+    def __post_init__(self) -> None:
+        if self.method.upper() not in {m.upper() for m in IMAGING_METHODS}:
+            raise ConfigError(
+                f"unknown imaging method {self.method!r}; "
+                f"choose from {list(IMAGING_METHODS)}")
+
+
+@dataclass
+class SyntheticConfig:
+    """Settings for the sparse-synthetic mode.
+
+    Its own section rather than more keys on ``imaging`` so that the
+    dependency graph stays precise: changing an RTM setting must not
+    invalidate the traces, and changing the trace layout must not
+    invalidate a migration that took an hour.
+    """
+
+    #: Where the K traces go: at the wells, at explicit ``points``, or on
+    #: a lattice of ``count``.
+    layout: str = "wells"
+    count: int = 9
+    points: list = field(default_factory=list)
+
+    def __post_init__(self) -> None:
+        if self.layout not in LAYOUTS:
+            raise ConfigError(
+                f"unknown trace layout {self.layout!r}; choose from {list(LAYOUTS)}")
 
 
 @dataclass
@@ -292,6 +328,7 @@ class ExperimentConfig:
     source: SourceConfig = field(default_factory=SourceConfig)
     acquisition: AcquisitionConfig = field(default_factory=AcquisitionConfig)
     imaging: ImagingConfig = field(default_factory=ImagingConfig)
+    synthetic: SyntheticConfig = field(default_factory=SyntheticConfig)
     fourd: FourDConfig = field(default_factory=FourDConfig)
     budget: BudgetConfig = field(default_factory=BudgetConfig)
     output: OutputConfig = field(default_factory=OutputConfig)

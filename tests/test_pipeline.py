@@ -247,3 +247,95 @@ def test_the_cli_reports_a_bad_configuration_without_a_traceback(capsys, tmp_pat
     bad.write_text("source:\n  freqency: 20\n")
     assert main(["describe", str(bad)]) == 1
     assert "unknown key" in capsys.readouterr().err
+
+
+# ------------------------------------------------- the sparse synthetic mode
+def test_the_synthetic_stage_puts_one_trace_at_each_well():
+    config = tiny_config()
+    config.reservoir.source = "mechanistic"
+    pipe = Pipeline(config)
+    synthetics = pipe.synthetic()
+    assert set(synthetics) == set(SCENARIO_NAMES)
+    base = synthetics["baseline"]
+    assert base.names == tuple(w.name for w in pipe.wells())
+    assert base.traces.shape[0] == len(pipe.wells())
+
+
+def test_the_synthetic_traces_index_the_propagation_grid_not_the_target():
+    """The layout comes from the target, the indices from the model sampled.
+
+    Conflating the two silently reads the wrong column, which is the kind
+    of bug that produces a plausible trace at the wrong place.
+    """
+    config = tiny_config()
+    config.reservoir.source = "mechanistic"
+    pipe = Pipeline(config)
+    models, _ = pipe.propagation_models()
+    grid = models["baseline"].grid
+    for site in pipe.synthetic()["baseline"].locations:
+        assert 0 <= site.ix < grid.nx and 0 <= site.iy < grid.ny
+        assert grid.origin[0] + site.ix * grid.dx == pytest.approx(site.x, abs=grid.dx)
+
+
+def test_a_flood_moves_the_synthetic_trace():
+    """The mode has to see the change it exists to screen for."""
+    config = tiny_config()
+    config.reservoir.source = "mechanistic"
+    pipe = Pipeline(config)
+    synthetics = pipe.synthetic()
+    difference = synthetics["saturation_only"].traces - synthetics["baseline"].traces
+    assert np.abs(difference).max() > 0.0
+
+
+def test_the_synthetic_costs_far_less_than_the_full_preview_cube():
+    config = tiny_config()
+    config.reservoir.source = "mechanistic"
+    pipe = Pipeline(config)
+    pipe.synthetic()
+    pipe.preview()
+    assert pipe.result.timings["synthetic"] < pipe.result.timings["preview"]
+
+
+def test_the_decomposition_keeps_the_two_seismic_modes_apart():
+    """A reader must be able to tell a trace number from an image number."""
+    config = tiny_config()
+    config.reservoir.source = "mechanistic"
+    pipe = Pipeline(config)
+    pipe.synthetic()
+    out = pipe.decompose()
+    assert "sparse" in out["seismic"]
+    assert "rtm" not in out["seismic"]        # nothing was migrated
+    assert set(out["seismic"]["sparse_nrms"]) == set(SCENARIO_NAMES[1:])
+    per_trace = out["seismic"]["sparse_nrms_per_trace"]["saturation_only"]
+    assert set(per_trace) == set(pipe.synthetic()["baseline"].names)
+
+
+def test_the_trace_layout_can_be_a_lattice_of_exactly_k():
+    config = tiny_config()
+    config.reservoir.source = "mechanistic"
+    config.synthetic.layout = "grid"
+    config.synthetic.count = 7
+    pipe = Pipeline(config)
+    assert pipe.synthetic()["baseline"].n_traces == 7
+
+
+def test_the_trace_layout_can_be_explicit_points():
+    config = tiny_config()
+    config.reservoir.source = "mechanistic"
+    config.synthetic.layout = "points"
+    config.synthetic.points = [[500.0, 500.0], [700.0, 700.0]]
+    pipe = Pipeline(config)
+    base = pipe.synthetic()["baseline"]
+    assert base.names == ("T1", "T2")
+    assert base.locations[0].x == 500.0
+
+
+def test_the_synthetic_cli_command_runs(capsys, tmp_path):
+    config = tiny_config()
+    config.reservoir.source = "mechanistic"
+    path = tmp_path / "tiny.yaml"
+    config.save(path)
+    assert main(["synthetic", str(path)]) == 0
+    printed = capsys.readouterr().out
+    assert "Not Full 3D Wave Modelling" in printed
+    assert "NRMS against baseline" in printed

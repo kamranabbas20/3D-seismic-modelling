@@ -43,11 +43,14 @@ def time_from_depth(vp: np.ndarray, dz: float) -> np.ndarray:
     Integrates ``2 dz / Vp`` down each column with the trapezoidal rule, so
     the time of the first sample is zero and each interval contributes the
     average slowness of its two ends.
+
+    The last axis is depth; everything before it is columns, so this takes
+    a ``(nx, ny, nz)`` cube or a ``(K, nz)`` handful of well locations.
     """
     slowness = 2.0 / np.asarray(vp, dtype=float)
-    interval = 0.5 * (slowness[:, :, 1:] + slowness[:, :, :-1]) * dz
+    interval = 0.5 * (slowness[..., 1:] + slowness[..., :-1]) * dz
     return np.concatenate(
-        [np.zeros(vp.shape[:2] + (1,)), np.cumsum(interval, axis=2)], axis=2
+        [np.zeros(slowness.shape[:-1] + (1,)), np.cumsum(interval, axis=-1)], axis=-1
     )
 
 
@@ -58,8 +61,52 @@ def reflectivity(impedance: np.ndarray) -> np.ndarray:
     interfaces, so the last axis is one shorter than the input.
     """
     ai = np.asarray(impedance, dtype=float)
-    upper, lower = ai[:, :, :-1], ai[:, :, 1:]
+    upper, lower = ai[..., :-1], ai[..., 1:]
     return (lower - upper) / (lower + upper)
+
+
+def synthetic_columns(twt: np.ndarray, impedance: np.ndarray, wavelet: np.ndarray,
+                      dt: float, nt: int, map_to_depth: bool = True):
+    """Reflectivity -> time series -> convolution -> optional depth mapping.
+
+    The shared core of both synthetic modes.  ``twt`` and ``impedance`` are
+    ``(..., nz)``; every axis before the last is an independent column, so
+    the same code serves the full cube and a handful of well locations, and
+    the timing convention below cannot drift between them.
+
+    Returns ``(traces, times, depth_traces)``, the last being ``None`` when
+    ``map_to_depth`` is false.
+    """
+    rc = reflectivity(impedance)
+    # Place each coefficient at the midpoint time of its interface.
+    rc_time = 0.5 * (twt[..., 1:] + twt[..., :-1])
+
+    lead = twt.shape[:-1]
+    n_col = int(np.prod(lead)) if lead else 1
+    rc_flat = rc.reshape(n_col, -1)
+    index = np.clip(np.round(rc_time / dt).astype(int), 0, nt - 1).reshape(n_col, -1)
+
+    # ``bincount`` rather than ``np.add.at``, which is an order of magnitude
+    # slower; both accumulate coefficients that land in the same sample.
+    series = np.stack([np.bincount(index[i], weights=rc_flat[i], minlength=nt)
+                       for i in range(n_col)])
+
+    w = np.asarray(wavelet, dtype=float)
+    # Full convolution truncated to the input length, not ``mode="same"``:
+    # centring on the full convolution would shift every event earlier by
+    # half the wavelet length. The wavelet's own delay is kept, so the
+    # timing convention matches the finite-difference solver, where the
+    # source wavelet carries the same delay.
+    traces = np.stack([np.convolve(s, w)[:nt] for s in series])
+    times = np.arange(nt) * dt
+
+    depth_traces = None
+    if map_to_depth:
+        twt_flat = twt.reshape(n_col, -1)
+        depth_traces = np.stack(
+            [np.interp(twt_flat[i], times, traces[i]) for i in range(n_col)]
+        ).reshape(lead + (twt.shape[-1],))
+    return traces.reshape(lead + (nt,)), times, depth_traces
 
 
 @dataclass
@@ -102,36 +149,12 @@ def convolution_preview(model: AcousticModel, wavelet: np.ndarray, dt: float,
     if dt <= 0:
         raise ConfigError(f"dt must be positive, got {dt}")
     grid = model.grid
-    ai = model.impedance
     twt = time_from_depth(model.vp, grid.dz)
-    rc = reflectivity(ai)
-    # Place each coefficient at the midpoint time of its interface.
-    rc_time = 0.5 * (twt[:, :, 1:] + twt[:, :, :-1])
-
     t_max = float(t_max if t_max is not None else twt.max())
     nt = int(np.ceil(t_max / dt)) + 1
-    times = np.arange(nt) * dt
 
-    nx, ny = grid.nx, grid.ny
-    series = np.zeros((nx, ny, nt))
-    index = np.clip(np.round(rc_time / dt).astype(int), 0, nt - 1)
-    for ix in range(nx):
-        for iy in range(ny):
-            np.add.at(series[ix, iy], index[ix, iy], rc[ix, iy])
-
-    w = np.asarray(wavelet, dtype=float)
-    # Full convolution truncated to the input length, not ``mode="same"``:
-    # centring on the full convolution would shift every event earlier by
-    # half the wavelet length. The wavelet's own delay is kept, so the
-    # timing convention matches the finite-difference solver, where the
-    # source wavelet carries the same delay.
-    traces = np.apply_along_axis(lambda s: np.convolve(s, w)[:nt], 2, series)
-
-    depth_traces = np.zeros(grid.shape)
-    if map_to_depth:
-        for ix in range(nx):
-            for iy in range(ny):
-                depth_traces[ix, iy] = np.interp(twt[ix, iy], times, traces[ix, iy])
-
+    traces, times, depth = synthetic_columns(twt, model.impedance, wavelet, dt, nt,
+                                             map_to_depth=map_to_depth)
+    depth_traces = depth if depth is not None else np.zeros(grid.shape)
     return ConvolutionPreview(time_traces=traces, times=times,
                               depth_traces=depth_traces, grid=grid)

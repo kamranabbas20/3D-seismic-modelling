@@ -40,6 +40,7 @@ from ..geology.builder import GeologyModel, build_geology
 from ..geology.templates import template
 from ..imaging.rtm import RTMSettings, RTMResult, migrate_survey
 from ..processing.preview import convolution_preview
+from ..processing.sparse import resolve_locations, sparse_synthetic
 from ..reservoir.mechanistic import (
     GasBreakout, PressureHalo, ReservoirScenario, SaturationFront,
 )
@@ -61,8 +62,8 @@ from ..wells.controls import ControlMode, WellControl, check_rates, suggest_cont
 from ..wells.well import Well, WellSet, pattern
 
 STAGES = ("geology", "wells", "completions", "controls", "flow", "reservoir",
-          "rockphysics", "acquisition", "qc", "plan", "preview", "simulate",
-          "migrate", "decompose")
+          "rockphysics", "acquisition", "qc", "plan", "preview", "synthetic",
+          "simulate", "migrate", "decompose")
 
 DTYPES = {"float32": np.float32, "float64": np.float64}
 
@@ -86,6 +87,7 @@ class ExperimentResult:
     qc: QCResult | None = None
     cost: object | None = None
     preview: dict | None = None
+    synthetics: dict | None = None
     gathers: dict[str, list[ShotRecord]] = field(default_factory=dict)
     images: dict[str, RTMResult] = field(default_factory=dict)
     decomposition: dict | None = None
@@ -437,6 +439,30 @@ class Pipeline:
             })
         return self.result.preview
 
+    def synthetic(self) -> dict:
+        """K vertical synthetic traces, the cheap alternative to migration.
+
+        This is the second seismic mode (``imaging.method:
+        sparse_synthetic``).  It never propagates a wavefield, so it costs
+        K columns rather than a survey, and what it returns is a set of
+        labelled traces, never an image.
+        """
+        if self.result.synthetics is None:
+            models, dt = self.propagation_models()
+            cfg = self.config.synthetic
+            # Sampled on the model grid; a lattice layout spreads itself
+            # over the target instead, which is the region of interest.
+            locations = resolve_locations(
+                models["baseline"].grid, layout=cfg.layout, wells=self.wells(),
+                points=cfg.points, count=cfg.count, region=self.domains.target)
+            wavelet = ricker(np.arange(int(2.0 / dt)) * dt, self.config.source.frequency)
+            self.result.synthetics = self._timed("synthetic", lambda: {
+                name: sparse_synthetic(models[name], locations, wavelet, dt,
+                                       t_max=self.config.solver.record_length)
+                for name in self.config.fourd.scenarios
+            })
+        return self.result.synthetics
+
     def simulate(self, progress=None) -> dict[str, list[ShotRecord]]:
         """Forward-model shot gathers for every scenario, independently."""
         if self.result.gathers:
@@ -531,6 +557,24 @@ class Pipeline:
             out["seismic"]["nrms"] = {
                 n: nrms(base, self.result.images[n].image) for n in SCENARIO_NAMES[1:]
             }
+
+        synth = self.result.synthetics
+        if synth and set(SCENARIO_NAMES) <= set(synth):
+            # Kept under its own key, never merged with the migrated result:
+            # these are 1D traces, and a reader must be able to tell which
+            # number came from which mode.
+            out["seismic"]["sparse"] = decompose(
+                *[synth[n].traces for n in SCENARIO_NAMES])
+            base = synth["baseline"].traces
+            out["seismic"]["sparse_nrms"] = {
+                n: nrms(base, synth[n].traces) for n in SCENARIO_NAMES[1:]
+            }
+            out["seismic"]["sparse_nrms_per_trace"] = {
+                n: {loc.name: nrms(base[i], synth[n].traces[i])
+                    for i, loc in enumerate(synth["baseline"].locations)}
+                for n in SCENARIO_NAMES[1:]
+            }
+            out["trace_locations"] = synth["baseline"].locations
         self.result.decomposition = out
         return out
 

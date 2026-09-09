@@ -31,10 +31,31 @@ reservoir physics → rock physics → wave physics → acquisition → imaging 
    → 4D decomposition into pressure, saturation and interaction
 ```
 
-A fast 1D convolution mode exists, and is labelled everywhere it appears as
-`Fast 1D/Convolution Approximation - Not Full 3D Wave Modelling`. It is for
-screening thousands of rock-physics cases before a handful go through the
-full chain — not for producing results.
+### Two screening modes beside it
+
+Neither propagates a wavefield, both are labelled everywhere they appear,
+and neither may be presented as a seismic image. They exist so that many
+rock-physics cases can be triaged cheaply before a handful go through the
+full chain.
+
+| mode | what it produces | cost on `demo_small` |
+| --- | --- | --- |
+| `sim3d preview` | the whole property cube filtered by the wavelet | 1.5 s |
+| `sim3d synthetic` | **K vertical 1D traces** at chosen locations | 20 ms |
+| `sim3d migrate` | the migrated image, from modelled gathers | ~10 min |
+
+The sparse mode (`imaging.method: sparse_synthetic`) is the one to reach
+for when the question is asked *at a well* — does the flood front show up
+on the monitor survey at P1, and by how much. Its `synthetic.layout` puts
+one trace per well by default, or spreads exactly `count` over the target,
+or takes explicit `points`. A trace agrees with the full cube at the same
+column, which is pinned by a test: if the cheap mode could disagree with
+the expensive one, it would not be screening for it.
+
+What a difference measured this way *is*: the 4D signal as the rock physics
+put it into the vertical impedance profile. What it is not: the difference
+a survey would record, because nothing here has been through an
+acquisition geometry or a migration operator.
 
 ## Install
 
@@ -74,13 +95,15 @@ activate, prefix each one with `.venv/bin/` (Unix) or `.venv\Scripts\`
 (Windows).
 
 ```bash
-pytest -q                                            # 345 tests, ~75 s — the real proof
+pytest -q                                            # 380 tests, ~75 s — the real proof
 sim3d physics                                        # what each mode does and does not model
 sim3d benchmark                                      # measure this machine
 sim3d describe    examples/configs/demo_small.yaml
 sim3d qc          examples/configs/demo_small.yaml   # the section 127 checks
 sim3d rockphysics examples/configs/demo_small.yaml   # four earth models, ~15 s
 sim3d plan        examples/configs/demo_small.yaml --benchmark
+sim3d preview     examples/configs/demo_small.yaml   # 1D convolution cube
+sim3d synthetic   examples/configs/sparse_synthetic.yaml  # K vertical traces
 sim3d run         examples/configs/demo_small.yaml   # everything, ~13 min on 4 cores
 ```
 
@@ -268,7 +291,7 @@ src/sim3d/
   acquisition/   OBN geometry, fold, offset and azimuth distributions
   wave/          FD scheme analysis, CPML, sources, the acoustic solver
   imaging/       RTM and its wavefield storage
-  processing/    convolution preview mode, light filters
+  processing/    the two 1D synthetic modes, light filters
   fourd/         the four scenarios, decomposition, 4D metrics
   validation/    model QC and the physics transparency table
   experiments/   the pipeline the CLI and the GUI both drive
@@ -276,7 +299,7 @@ src/sim3d/
   ui/            the Streamlit front end, its display components and the
                  3D scene
   cli.py
-tests/           345 tests, ~75 seconds
+tests/           380 tests, ~75 seconds
 examples/configs/
 docs/
 ```
@@ -341,7 +364,7 @@ or a literature measurement — never against a stored output of this code.
   estimate with no bound status.
 
 ```bash
-pytest -q                    # 345 tests, ~75 s (includes the section 131 null test)
+pytest -q                    # 380 tests, ~75 s (includes the section 131 null test)
 ```
 
 Unactivated, that is `.venv/bin/pytest -q` on Unix and

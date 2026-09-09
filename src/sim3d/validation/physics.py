@@ -26,6 +26,26 @@ PHYSICS_MODES: dict[str, dict[str, object]] = {
             "S waves and mode conversion",
         ],
     },
+    "sparse_synthetic": {
+        "label": ("Sparse 1D Synthetic Traces - Not Full 3D Wave Modelling "
+                  "or Migration"),
+        "includes": [
+            "vertical normal-incidence reflectivity",
+            "source bandwidth",
+            "tuning between closely spaced interfaces",
+            "the 4D signal as the rock physics put it into the impedance profile",
+        ],
+        "excludes": [
+            "everything away from the K sampled columns",
+            "lateral wave propagation",
+            "diffraction",
+            "refraction and head waves",
+            "transmission loss and geometric spreading",
+            "acquisition geometry, offset, azimuth and illumination",
+            "migration",
+            "S waves and mode conversion",
+        ],
+    },
     "acoustic_fd": {
         "label": "3D acoustic finite-difference propagation",
         "includes": [
@@ -85,5 +105,5 @@ def describe_mode(mode: str) -> str:
 
 def physics_table(modes=None) -> str:
     """The full transparency table for the modes in use."""
-    modes = list(modes or ("convolution", "acoustic_fd", "rtm"))
+    modes = list(modes or ("convolution", "sparse_synthetic", "acoustic_fd", "rtm"))
     return "\n\n".join(describe_mode(m) for m in modes)
