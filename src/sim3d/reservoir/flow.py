@@ -98,6 +98,22 @@ class FlowSettings:
 
 
 @dataclass
+class _Connection:
+    """One well's contribution to a timestep, as the solver needs it."""
+
+    cells: np.ndarray
+    weights: np.ndarray      #: well index times mobility, m^3/s per Pa
+    q_water: np.ndarray      #: m^3/s, positive into the reservoir
+    q_oil: np.ndarray
+    mode: "ControlMode"
+    bhp: float
+
+    def __iter__(self):
+        """Legacy unpacking as ``(cells, weights, q_water, q_oil)``."""
+        return iter((self.cells, self.weights, self.q_water, self.q_oil))
+
+
+@dataclass
 class WellHistory:
     """Per-well time series (section 11).  SI internally, oilfield on display."""
 
@@ -374,15 +390,18 @@ class FlowSimulator:
 
             rates = self._well_rates(day, histories, record=False)
             dt, dt_days = self._limit_timestep(dt, dt_days, rates)
+            modes = self._pinned_modes(rates)
             self._solve_pressure(dt, rates)
-            # Re-evaluate on the new pressure: that is the rate actually
-            # delivered over the step, and the one worth recording.
+            # Re-evaluate on the new pressure - that is the rate actually
+            # delivered - but hold the control decision fixed, so the rate
+            # applied here is exactly the one the solve honoured.
             rates = self._well_rates(day, histories, record=True,
-                                     at_day=day + dt_days)
+                                     at_day=day + dt_days, modes=modes)
             self._advance_saturation(dt, rates)
 
-            for name, (_, _, q_water, q_oil) in rates.items():
-                total = float(np.sum(q_water) + np.sum(q_oil)) * dt
+            for connection in rates.values():
+                total = float(np.sum(connection.q_water)
+                              + np.sum(connection.q_oil)) * dt
                 if total > 0:
                     injected += total
                 else:
@@ -430,8 +449,18 @@ class FlowSimulator:
         """Index of the upstream cell of each face, by potential."""
         return np.where(potential_difference > 0, self.face_hi, self.face_lo)
 
-    def _well_rates(self, day: float, histories, record: bool, at_day=None):
-        """Per-connection water and oil rates, honouring mode and BHP limits."""
+    def _well_rates(self, day: float, histories, record: bool, at_day=None,
+                    modes: dict | None = None):
+        """Per-connection water and oil rates, honouring mode and BHP limits.
+
+        ``modes`` pins the control decision made before the pressure solve,
+        as ``{well: (mode, bhp)}``.  Both halves matter.  Pinning the mode
+        alone is worse than not pinning at all: a well that switched to
+        pressure control because its rate target implied an illegal drawdown
+        would come back through the pressure branch and read
+        ``control.target`` - which for that well is a *rate* - as its
+        bottom-hole pressure.
+        """
         relperm = self.settings.relperm
         out = {}
         for well in self.wells:
@@ -459,34 +488,44 @@ class FlowSimulator:
                                  0.0, 0.0, float("nan"), "zero mobility")
                 continue
 
-            mode = control.mode
+            pinned = modes.get(well.name) if modes else None
+            mode = pinned[0] if pinned else control.mode
             if mode is ControlMode.BHP:
-                bhp = control.target
+                bhp = pinned[1] if pinned else control.target
                 q = weights * (bhp - self.p[cells])
             else:
                 target = control.target * (1.0 if injector else -1.0)
                 q = target * weights / total_weight
                 bhp = float(np.average(self.p[cells] + q / np.maximum(weights, 1e-300),
                                        weights=weights))
-                if control.bhp_limit is not None:
+                if control.bhp_limit is not None and pinned is None:
                     violated = (bhp > control.bhp_limit if injector
                                 else bhp < control.bhp_limit)
                     if violated:
                         bhp = control.bhp_limit
                         q = weights * (bhp - self.p[cells])
                         mode = ControlMode.BHP
+            fw_cell = relperm.fractional_flow(self.sw[cells])
             if injector:
-                q_water, q_oil = np.maximum(q, 0.0), np.zeros_like(q)
+                q_water = np.where(q >= 0.0, q, q * fw_cell)
             else:
-                fw = relperm.fractional_flow(self.sw[cells])
-                q_water, q_oil = np.minimum(q, 0.0) * fw, np.minimum(q, 0.0) * (1.0 - fw)
-            out[well.name] = (cells, weights, q_water, q_oil)
+                q_water = q * fw_cell
+            q_oil = q - q_water
+            out[well.name] = _Connection(cells=cells, weights=weights,
+                                         q_water=q_water, q_oil=q_oil,
+                                         mode=mode, bhp=bhp)
             if record:
                 self._record(histories[well.name],
                              at_day if at_day is not None else day,
                              float(np.sum(q_oil)), float(np.sum(q_water)), bhp,
                              mode.value)
         return out
+
+    @staticmethod
+    def _pinned_modes(rates) -> dict:
+        """The control decision each well arrived at - mode *and* pressure."""
+        return {name: (connection.mode, connection.bhp)
+                for name, connection in rates.items()}
 
     @staticmethod
     def _record(history: WellHistory, day, oil, water, bhp, control) -> None:
@@ -521,8 +560,20 @@ class FlowSimulator:
         _scatter_add(rhs, self.face_lo, -gravity)
         _scatter_add(rhs, self.face_hi, gravity)
 
-        for cells, weights, q_water, q_oil in rates.values():
-            _scatter_add(rhs, cells, q_water + q_oil)
+        # A well on rate control contributes a known source term. A well on
+        # bottom-hole pressure does not: its rate depends on the pressure
+        # being solved for, so it enters the matrix implicitly. Treating it
+        # explicitly - using last step's pressure - makes the rate the solve
+        # honours differ from the rate the saturation update then applies,
+        # and material balance stops closing.
+        for connection in rates.values():
+            if connection.mode is ControlMode.BHP:
+                _scatter_add(diagonal, connection.cells, connection.weights)
+                _scatter_add(rhs, connection.cells,
+                             connection.weights * connection.bhp)
+            else:
+                _scatter_add(rhs, connection.cells,
+                             connection.q_water + connection.q_oil)
 
         rows = np.concatenate([np.arange(n), self.face_lo, self.face_hi])
         cols = np.concatenate([np.arange(n), self.face_hi, self.face_lo])
@@ -558,8 +609,8 @@ class FlowSimulator:
         net = np.zeros(self.n)
         _scatter_add(net, self.face_lo, -flux)
         _scatter_add(net, self.face_hi, flux)
-        for cells, _, q_water, _ in rates.values():
-            _scatter_add(net, cells, q_water)
+        for connection in rates.values():
+            _scatter_add(net, connection.cells, connection.q_water)
         return net
 
     def _advance_saturation(self, dt: float, rates) -> None:

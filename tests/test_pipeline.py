@@ -53,6 +53,21 @@ def pipeline():
     return Pipeline(tiny_config())
 
 
+def test_the_flow_path_and_the_mechanistic_path_both_produce_four_states():
+    """Two ways to reach the four earth models, and both must isolate.
+
+    The flow simulator is the default and gives a physically consistent
+    history; the mechanistic generator remains the only way to impose free
+    gas, which a two-phase model cannot produce.
+    """
+    for source in ("flow", "mechanistic"):
+        config = tiny_config()
+        config.reservoir.source = source
+        states = Pipeline(config).reservoir()
+        states.check_isolation()
+        assert set(dict(states.items())) == set(SCENARIO_NAMES)
+
+
 def test_stages_run_in_dependency_order_and_cache(pipeline):
     result = pipeline.run(("geology", "reservoir", "rockphysics", "acquisition"))
     assert result.geology is not None
@@ -173,6 +188,10 @@ def test_the_4d_null_test(tmp_path):
     every 4D difference the platform ever produced.
     """
     config = tiny_config()
+    # The mechanistic generator, because it can be told to perturb nothing at
+    # all. The flow simulator cannot: wells that are open move fluid, which
+    # is the point of it.
+    config.reservoir.source = "mechanistic"
     config.reservoir.scenario.time_state = "T0"   # zero perturbation
     pipe = Pipeline(config)
 

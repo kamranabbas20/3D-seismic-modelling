@@ -101,24 +101,24 @@ Section numbers refer to the project specification. Three states:
 
 | § | Requirement | State | Notes |
 |---|---|---|---|
-| 1 | Interactive well placement by mouse | not started | Data model is ready (`WellSpec` in the config); the GUI click handler is not |
+| 1 | Interactive well placement by mouse | done | Add Well, pick type, click the map. Select, move, rename, retype, delete and edit completions and controls. Producers green, injectors blue, everywhere |
 | 2 | Completions by geological unit | done | Layer intersection honours dip, fold and fault throw; manual sub-intervals validated against their unit |
-| 3 | Structural geology editing | partial | Engine supports all the listed structures; no interactive editor |
-| 4 | Fault definition | partial | Planar faults with strike/dip/throw/extent/transmissibility, now feeding the flow model; no fault editor UI |
-| 5 | Interactive 3D model with visibility toggles | not started | Needs a volume renderer |
-| 6 | Well representation in 3D | not started | Depends on section 5 |
+| 3 | Structural geology editing | partial | Engine supports all the listed structures and they are visible in 3D; parameters are edited in the configuration, not by dragging surfaces |
+| 4 | Fault definition | partial | Planar faults with strike/dip/throw/extent/transmissibility, feeding both the geometry and the flow model, drawn in 3D; no fault editor UI |
+| 5 | Interactive 3D model with visibility toggles | done | Rotate, pan, zoom, reset, perspective/orthographic; per-layer, per-well and per-component visibility; layer transparency; decimated property volumes |
+| 6 | Well representation in 3D | done | True vertical trajectories with open intervals drawn thick in the well's own colour, and a filled wellhead circle |
 | 7 | User-defined simulation duration and timestep | done | Days internally, adaptive timestep under a saturation-change limit |
 | 8 | Pressure in psi everywhere | done | Single display unit, no toggle |
 | 9 | Sensible production and injection rates | done | Suggestion is the smaller of deliverability and pattern scale, with the reasoning recorded; sanity checks warn and explain |
 | 10 | Rate and well-control modes | done | Liquid/oil/water rate and BHP, with limit switching |
 | 11 | Dynamic well behaviour | done | Rates, BHP, water cut and cumulative volumes as time series |
-| 12 | Injection/production schedule | partial | Per-well start and end days; no mid-run rate or completion changes |
-| 13 | Saveable scenario setup | partial | Configuration is complete and hashed; results are not yet persisted |
-| 14 | Save/load/duplicate/delete | not started | Needs the results store of section 13 |
-| 15 | Scenario comparison | not started | Architecture supports it; no UI |
-| 16 | Recommended workflow | partial | Steps 1-2 and 6-12 exist; steps 3-5 need the interactive placement UI |
+| 12 | Injection/production schedule | partial | Per-well start and end days, editable in the GUI; no mid-run rate or completion changes |
+| 13 | Saveable scenario setup | done | Definition, flow results and seismic results in three separate files, plus display state; a configuration edit never discards stored results |
+| 14 | Save/load/duplicate/delete | done | Plus rename. Duplicate copies the definition only by default |
+| 15 | Scenario comparison | partial | Two setups compared section by section, with the stages that differ; no side-by-side result panels yet |
+| 16 | Recommended workflow | done | All twelve steps are reachable from the GUI |
 | 17 | Dependency-aware recalculation | done | Explicit graph in `core.graph`, tested against the requirement's own examples |
-| 18 | Core UX principle | partial | Automatic derivation of depths, thicknesses, pore volume and rates is in place |
+| 18 | Core UX principle | partial | Depths, thicknesses, pore volume and rates are derived automatically and overridable; geology is still built from templates rather than drawn |
 
 ## Not started
 

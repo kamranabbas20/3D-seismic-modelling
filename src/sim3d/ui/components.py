@@ -89,17 +89,22 @@ def slice_figure(volume: np.ndarray, grid: Grid3D, cursor, *, title: str,
                       row=1, col=col)
 
     if wells is not None:
-        wx = [w.x for w in wells]
-        wy = [w.y for w in wells]
-        fig.add_trace(
-            go.Scatter(x=wx, y=wy, mode="markers+text", text=[w.name for w in wells],
-                       textposition="top center",
-                       textfont=dict(color=theme.INK_SECONDARY, size=10),
-                       marker=dict(size=9, color=theme.SURFACE, line=dict(
-                           width=2, color=theme.INK_PRIMARY)),
-                       hovertext=[f"{w.name} ({w.role})" for w in wells],
-                       hoverinfo="text", showlegend=False),
-            row=1, col=3)
+        for role in ("injector", "producer", "observation"):
+            group = [w for w in wells if w.role == role]
+            if not group:
+                continue
+            fig.add_trace(
+                go.Scatter(
+                    x=[w.x for w in group], y=[w.y for w in group],
+                    mode="markers+text", text=[w.name for w in group],
+                    textposition="top center",
+                    textfont=dict(color=theme.INK_SECONDARY, size=10),
+                    marker=dict(size=10, color=theme.WELL_COLOUR[role],
+                                symbol=theme.WELL_SYMBOL_2D[role],
+                                line=dict(width=1.5, color=theme.SURFACE)),
+                    hovertext=[f"{w.name} ({role})" for w in group],
+                    hoverinfo="text", showlegend=False),
+                row=1, col=3)
 
     fig.update_layout(**theme.plotly_layout(
         title=dict(text=title, font=dict(size=14, color=theme.INK_PRIMARY)),
@@ -110,11 +115,16 @@ def slice_figure(volume: np.ndarray, grid: Grid3D, cursor, *, title: str,
 
 
 def map_figure(wells=None, acquisition=None, grid: Grid3D | None = None,
-               pml_nodes: int = 0, height: int = 520) -> go.Figure:
+               pml_nodes: int = 0, height: int = 520,
+               bounds=None) -> go.Figure:
     """Plan view of sources, receivers, wells and the domain boundaries.
 
     Carries no in-figure title: the legend sits above the plot area, and a
     title there would collide with it. Streamlit renders the heading.
+
+    ``bounds`` pins the axis range. Without it, adding a trace that extends
+    past ``grid`` - the invisible placement lattice, say - rescales the whole
+    map and the domain box shrinks to a corner.
     """
     fig = go.Figure()
     if grid is not None:
@@ -144,7 +154,7 @@ def map_figure(wells=None, acquisition=None, grid: Grid3D | None = None,
             marker=dict(symbol="square", size=6, color=theme.SERIES[0]),
             hovertemplate="node<br>x=%{x:,.0f} m<br>y=%{y:,.0f} m<extra></extra>"))
     if wells is not None:
-        for role, symbol in (("injector", "triangle-down"), ("producer", "triangle-up")):
+        for role in ("injector", "producer", "observation"):
             group = [w for w in wells if w.role == role]
             if not group:
                 continue
@@ -153,15 +163,21 @@ def map_figure(wells=None, acquisition=None, grid: Grid3D | None = None,
                 mode="markers+text", name=f"{role}s ({len(group)})",
                 text=[w.name for w in group], textposition="top center",
                 textfont=dict(color=theme.INK_SECONDARY, size=11),
-                marker=dict(symbol=symbol, size=13, color=theme.SURFACE,
-                            line=dict(width=2, color=theme.INK_PRIMARY)),
+                marker=dict(symbol=theme.WELL_SYMBOL_2D[role], size=14,
+                            color=theme.WELL_COLOUR[role],
+                            line=dict(width=2, color=theme.SURFACE)),
                 hovertemplate="%{text}<br>x=%{x:,.0f} m<br>y=%{y:,.0f} m<extra></extra>"))
+    x_axis = dict(gridcolor=theme.GRIDLINE, linecolor=theme.AXIS, zeroline=False,
+                  tickfont=dict(color=theme.INK_MUTED), title="x (m)")
+    y_axis = dict(scaleanchor="x", scaleratio=1, gridcolor=theme.GRIDLINE,
+                  linecolor=theme.AXIS, zeroline=False,
+                  tickfont=dict(color=theme.INK_MUTED), title="y (m)")
+    if bounds is not None:
+        x_axis["range"] = list(bounds[0])
+        y_axis["range"] = list(bounds[1])
     fig.update_layout(**theme.plotly_layout(
         height=height, margin=dict(l=56, r=16, t=52, b=44),
-        xaxis_title="x (m)", yaxis_title="y (m)",
-        yaxis=dict(scaleanchor="x", scaleratio=1, gridcolor=theme.GRIDLINE,
-                   linecolor=theme.AXIS, zeroline=False,
-                   tickfont=dict(color=theme.INK_MUTED)),
+        xaxis=x_axis, yaxis=y_axis,
         legend=dict(orientation="h", yanchor="bottom", y=1.02, x=0)))
     return fig
 

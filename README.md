@@ -74,7 +74,7 @@ activate, prefix each one with `.venv/bin/` (Unix) or `.venv\Scripts\`
 (Windows).
 
 ```bash
-pytest -q                                            # 273 tests, ~60 s — the real proof
+pytest -q                                            # 345 tests, ~75 s — the real proof
 sim3d physics                                        # what each mode does and does not model
 sim3d benchmark                                      # measure this machine
 sim3d describe    examples/configs/demo_small.yaml
@@ -94,12 +94,29 @@ modelling. Everything above it is free.
 sim3d gui
 ```
 
-Seven pages — Project, Geology, Wells & Reservoir, Rock Physics,
-Acquisition & QC, Simulation & Imaging, 4D Analysis. Every volume is shown
+Ten pages — Project, Geology, 3D Model, Wells & Completions, Flow
+Simulation, Rock Physics, Acquisition & QC, Simulation & Imaging, 4D
+Analysis, Scenarios. Every volume is shown
 as three orthogonal sections through **one cursor shared across every page**
 (spec section 123), so the geological model, the property volumes and the
 migrated image — which live on different grids at different spacings — are
 always being inspected at the same place.
+
+![3D model page](docs/gui-3d-model.png)
+
+**Wells are placed with the mouse.** Turn on *Add well*, pick producer or
+injector, and click the map. Producers are green, injectors blue, filled
+circles, in map view, sections and the 3D scene alike. Select a well to
+move, rename, retype or delete it, choose which geological units it is
+open in, and set its control mode, rate and schedule.
+
+![Well placement](docs/gui-well-placement.png)
+
+Completions are chosen **by geological unit, never by typing depths**. The
+local top and base come from the model, so a completion stays correct when
+the well moves across a dipping or faulted structure — and moving a well
+somewhere the unit does not exist fails loudly instead of perforating the
+wrong rock.
 
 ![Rock Physics page](docs/gui-rock-physics.png)
 
@@ -255,9 +272,11 @@ src/sim3d/
   fourd/         the four scenarios, decomposition, 4D metrics
   validation/    model QC and the physics transparency table
   experiments/   the pipeline the CLI and the GUI both drive
-  ui/            the Streamlit front end and its display components
+  io/            scenario persistence: definition, flow and seismic apart
+  ui/            the Streamlit front end, its display components and the
+                 3D scene
   cli.py
-tests/           273 tests, ~60 seconds
+tests/           345 tests, ~75 seconds
 examples/configs/
 docs/
 ```
@@ -322,7 +341,7 @@ or a literature measurement — never against a stored output of this code.
   estimate with no bound status.
 
 ```bash
-pytest -q                    # 273 tests, ~60 s (includes the section 131 null test)
+pytest -q                    # 345 tests, ~75 s (includes the section 131 null test)
 ```
 
 Unactivated, that is `.venv/bin/pytest -q` on Unix and
@@ -342,9 +361,11 @@ Interfaces are designed for these; the physics is not there yet, and the
   (ΔP, ΔSw, ΔSg, ΔVp, Δρ, ΔAI and every seismic difference) that a future
   inversion would be trained or tested against.
 - Marine streamer, OBC and land geometries; SEG-Y and RESQML I/O; the GPU
-  backend. The GUI has no 3D volume rendering (PyVista/VTK) or synchronised
-  multi-panel 4D viewer yet — volumes are inspected through linked
-  orthogonal sections.
+  backend.
+- Geology is built from parametric templates, not drawn: dip, throw and fold
+  amplitude are configuration values rather than surfaces you drag.
+- Scenario comparison shows which settings differ and what would have to be
+  rerun; it does not yet put two sets of results side by side.
 
 ## References
 

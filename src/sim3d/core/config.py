@@ -133,6 +133,9 @@ class ScenarioConfig:
 
 @dataclass
 class ReservoirConfig:
+    #: ``flow`` runs the two-phase simulator; ``mechanistic`` uses the
+    #: parametric generator, which is the only way to impose free gas.
+    source: str = "flow"
     baseline: BaselineConfig = field(default_factory=BaselineConfig)
     scenario: ScenarioConfig = field(default_factory=ScenarioConfig)
 

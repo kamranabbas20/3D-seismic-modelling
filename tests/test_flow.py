@@ -214,6 +214,30 @@ def test_a_bhp_limit_overrides_the_rate_target():
     assert abs(history.liquid_rate[-1]) < 1.0
 
 
+def test_material_balance_survives_wells_switching_control_mode():
+    """The case that broke it: a rate target the well cannot hold.
+
+    When a well switches to pressure control mid-run, the rate the pressure
+    solve honours and the rate the saturation update applies must be the
+    same one. Getting that wrong leaks a few percent of throughput - and
+    pinning only the *mode* without the pressure is worse still, because the
+    well then reads its rate target as a bottom-hole pressure.
+    """
+    geology = slab(k_md=20.0)
+    wells = WellSet([Well("I1", "injector", 100.0, 50.0, (1000.0, 1040.0)),
+                     Well("P1", "producer", 900.0, 50.0, (1000.0, 1040.0))])
+    controls = {
+        "I1": WellControl(ControlMode.WATER_RATE, 5.0e-3, bhp_limit=2.6e7),
+        "P1": WellControl(ControlMode.LIQUID_RATE, 5.0e-3, bhp_limit=1.4e7),
+    }
+    result = build(geology, wells, controls, FlowSettings()).run(
+        400.0, report_every_days=100.0)
+
+    modes = {mode for history in result.wells.values() for mode in history.control}
+    assert "bhp" in modes, "the test needs a well to actually hit its limit"
+    assert result.material_balance_error < 1e-8
+
+
 def test_a_schedule_keeps_a_well_shut_until_its_start_day():
     geology = slab()
     wells = WellSet([Well("P1", "producer", 500.0, 50.0, (1000.0, 1040.0))])

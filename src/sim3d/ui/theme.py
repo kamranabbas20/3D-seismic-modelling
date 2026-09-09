@@ -52,6 +52,22 @@ SCENARIO_COLOUR = {
     "interaction": SERIES[3],
 }
 
+# --- well type ------------------------------------------------------------
+#: The application-wide convention: producers green, injectors blue, filled
+#: circles, in map view, sections, the 3D scene and every selection list.
+#:
+#: The pair separates well for protanopia and deuteranopia (Delta E 26.5) but
+#: only marginally for tritanopia (7.6, inside the 6-8 band), so well type is
+#: never carried by colour alone: every symbol is drawn with its well name
+#: beside it and the two roles use different marker outlines.
+WELL_COLOUR = {
+    "producer": "#008300",
+    "injector": "#2a78d6",
+    "observation": INK_SECONDARY,
+}
+WELL_SYMBOL_2D = {"producer": "circle", "injector": "circle", "observation": "circle-open"}
+WELL_SYMBOL_3D = {"producer": "circle", "injector": "circle", "observation": "circle-open"}
+
 # --- status ---------------------------------------------------------------
 STATUS = {"PASS": "#0ca30c", "WARNING": "#fab219", "FAIL": "#d03b3b"}
 STATUS_ICON = {"PASS": "✓", "WARNING": "!", "FAIL": "✕"}

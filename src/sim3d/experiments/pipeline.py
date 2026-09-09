@@ -27,12 +27,15 @@ from ..acquisition.geometry import Acquisition, OBNGeometry
 from ..core.config import ExperimentConfig
 from ..core.errors import ConfigError
 from ..core.grid import DomainSet
+from ..core.units import psi_to_pa, stb_per_day_to_si
 from ..core.planning import (
     CostClass, ResourceBudget, check_budget, estimate_experiment, measure_throughput,
 )
 from ..fourd.decomposition import decompose
 from ..fourd.metrics import nrms
-from ..fourd.scenarios import SCENARIO_NAMES, build_earth_models, build_states
+from ..fourd.scenarios import (
+    SCENARIO_NAMES, build_earth_models, build_states, build_states_from_flow,
+)
 from ..geology.builder import GeologyModel, build_geology
 from ..geology.templates import template
 from ..imaging.rtm import RTMSettings, RTMResult, migrate_survey
@@ -40,6 +43,8 @@ from ..processing.preview import convolution_preview
 from ..reservoir.mechanistic import (
     GasBreakout, PressureHalo, ReservoirScenario, SaturationFront,
 )
+from ..reservoir.flow import FlowSettings, FlowSimulator
+from ..reservoir.relperm import CoreyRelativePermeability
 from ..reservoir.state import initial_state
 from ..rockphysics.model import RockPhysicsConfig
 from ..rockphysics.pressure import PressureModel
@@ -51,10 +56,13 @@ from ..wave.acoustic import (
 from ..wave.cpml import PMLSettings
 from ..wave.sources import PointSource
 from ..wave.wavelets import ricker, ricker_fmax
-from ..wells.well import pattern
+from ..wells.completion import Completion, default_completions
+from ..wells.controls import ControlMode, WellControl, check_rates, suggest_control
+from ..wells.well import Well, WellSet, pattern
 
-STAGES = ("geology", "reservoir", "rockphysics", "acquisition", "qc", "plan",
-          "preview", "simulate", "migrate", "decompose")
+STAGES = ("geology", "wells", "completions", "controls", "flow", "reservoir",
+          "rockphysics", "acquisition", "qc", "plan", "preview", "simulate",
+          "migrate", "decompose")
 
 DTYPES = {"float32": np.float32, "float64": np.float64}
 
@@ -70,6 +78,10 @@ class ExperimentResult:
     wells: object | None = None
     states: object | None = None
     earth: object | None = None
+    completions: dict | None = None
+    controls: dict | None = None
+    flow: object | None = None
+    rate_warnings: list = field(default_factory=list)
     acquisition: Acquisition | None = None
     qc: QCResult | None = None
     cost: object | None = None
@@ -148,13 +160,120 @@ class Pipeline:
         return self.result.geology
 
     def wells(self):
+        """Explicit wells if the configuration has them, otherwise a pattern.
+
+        A pattern is a starting point; the moment a well is placed, moved or
+        renamed the configuration carries the wells themselves, and the
+        pattern name stops being consulted.
+        """
         if self.result.wells is None:
-            w = self.config.wells
-            ws = pattern(w.pattern, **w.parameters)
-            ws.min_spacing = w.min_spacing
+            spec = self.config.wells
+            if spec.wells:
+                ws = WellSet([
+                    Well(name=w["name"], role=w["role"], x=float(w["x"]),
+                         y=float(w["y"]),
+                         perforation=tuple(w.get("perforation", (1200.0, 1350.0))))
+                    for w in spec.wells])
+            else:
+                ws = pattern(spec.pattern, **spec.parameters)
+            ws.min_spacing = spec.min_spacing
             self.result.wells = ws
             self.result.notes += [f"wells: {n}" for n in ws.check_spacing()]
         return self.result.wells
+
+    def completions(self) -> dict:
+        """Open intervals per well, named by geological unit (requirement 2)."""
+        if self.result.completions is None:
+            geology = self.geology()
+            declared = {w["name"]: w.get("completions", [])
+                        for w in self.config.wells.wells}
+            out = {}
+            for well in self.wells():
+                names = declared.get(well.name) or []
+                out[well.name] = ([Completion(layer=n) for n in names] if names
+                                  else default_completions(well, geology))
+            self.result.completions = out
+        return self.result.completions
+
+    def controls(self) -> dict:
+        """Control mode, target and schedule per well (requirements 9, 10, 12)."""
+        if self.result.controls is None:
+            geology = self.geology()
+            wells = self.wells()
+            baseline = self.baseline_state()
+            pressure = float(baseline.pressure[geology.reservoir_mask].mean())
+            declared = {w["name"]: w for w in self.config.wells.wells}
+            sim = self.config.simulation
+            out = {}
+            for well in wells:
+                spec = declared.get(well.name)
+                suggestion = suggest_control(
+                    well, geology, self.completions()[well.name], list(wells),
+                    pressure, drawdown=psi_to_pa(sim.suggested_drawdown_psi),
+                    sweep_years=sim.sweep_years)
+                if spec and spec.get("target") is not None:
+                    mode = ControlMode(spec.get("control", suggestion.mode.value))
+                    target = (psi_to_pa(float(spec["target"]))
+                              if mode is ControlMode.BHP
+                              else stb_per_day_to_si(float(spec["target"])))
+                    suggestion = WellControl(
+                        mode=mode, target=target,
+                        bhp_limit=(psi_to_pa(float(spec["bhp_limit_psi"]))
+                                   if spec.get("bhp_limit_psi") is not None
+                                   else suggestion.bhp_limit),
+                        start_day=float(spec.get("start_day", 0.0)),
+                        end_day=(None if spec.get("end_day") is None
+                                 else float(spec["end_day"])),
+                        provenance="set explicitly")
+                elif spec:
+                    suggestion.start_day = float(spec.get("start_day", 0.0))
+                    suggestion.end_day = (None if spec.get("end_day") is None
+                                          else float(spec["end_day"]))
+                out[well.name] = suggestion
+            self.result.controls = out
+            self.result.rate_warnings = check_rates(
+                list(wells), out, geology, pressure, sim.duration_days)
+            self.result.notes += [f"rates: {w}" for w in self.result.rate_warnings]
+        return self.result.controls
+
+    def baseline_state(self):
+        """The initial reservoir state, before any well has produced."""
+        if getattr(self, "_baseline", None) is None:
+            b = self.config.reservoir.baseline
+            self._baseline = initial_state(
+                self.geology(), pressure_gradient=b.pressure_gradient,
+                datum_pressure=b.datum_pressure, sw=b.sw, sg=b.sg,
+                temperature=b.temperature)
+        return self._baseline
+
+    def flow_settings(self) -> FlowSettings:
+        sim = self.config.simulation
+        return FlowSettings(
+            relperm=CoreyRelativePermeability(
+                swc=sim.swc, sor=sim.sor, krw_max=sim.krw_max, kro_max=sim.kro_max,
+                nw=sim.nw, no=sim.no,
+                water_viscosity=sim.water_viscosity_cp * 1e-3,
+                oil_viscosity=sim.oil_viscosity_cp * 1e-3),
+            total_compressibility=sim.total_compressibility_per_psi / 6894.757293168,
+            water_density=sim.water_density, oil_density=sim.oil_density,
+            kv_over_kh=sim.kv_over_kh, gravity=sim.gravity,
+            max_saturation_change=sim.max_saturation_change,
+            max_timestep_days=sim.max_timestep_days)
+
+    def flow(self, progress=None):
+        """Run the two-phase flow simulation (requirement 7)."""
+        if self.result.flow is None:
+            sim = self.config.simulation
+            baseline = self.baseline_state()
+            simulator = FlowSimulator(
+                self.geology(), self.wells(), self.completions(), self.controls(),
+                baseline.pressure, baseline.sw, self.flow_settings())
+            self.result.flow = self._timed("flow", lambda: simulator.run(
+                sim.duration_days, sim.report_every_days, progress=progress))
+            self.result.notes.append(
+                f"flow: {self.result.flow.n_timesteps:,} timesteps, material "
+                f"balance {self.result.flow.material_balance_error:.2e}")
+        return self.result.flow
 
     def scenario(self) -> ReservoirScenario:
         s = self.config.reservoir.scenario
@@ -177,19 +296,32 @@ class Pipeline:
         )
 
     def reservoir(self):
+        """The four reservoir states.
+
+        From the flow simulation when ``reservoir.source`` is ``flow`` - the
+        default, and the physically consistent one - or from the parametric
+        mechanistic generator, which remains the way to impose free gas that
+        the two-phase flow model cannot produce.
+        """
         if self.result.states is None:
-            geology = self.geology()
-            b = self.config.reservoir.baseline
-            baseline = initial_state(
-                geology, pressure_gradient=b.pressure_gradient,
-                datum_pressure=b.datum_pressure, sw=b.sw, sg=b.sg,
-                temperature=b.temperature)
-            self.result.states = self._timed(
-                "reservoir",
-                lambda: build_states(baseline, self.scenario(), self.wells(),
-                                     getattr(self, "_faults", None)))
-            self.result.notes.append(
-                "reservoir: four isolated states built and isolation verified")
+            baseline = self.baseline_state()
+            if self.config.reservoir.source == "flow":
+                flow = self.flow()
+                sim = self.config.simulation
+                day = (sim.duration_days if sim.monitor_day is None
+                       else float(sim.monitor_day))
+                self.result.states = self._timed(
+                    "reservoir",
+                    lambda: build_states_from_flow(baseline, flow, day))
+                self.result.notes.append(
+                    f"reservoir: four states from the flow simulation at day {day:g}")
+            else:
+                self.result.states = self._timed(
+                    "reservoir",
+                    lambda: build_states(baseline, self.scenario(), self.wells(),
+                                         getattr(self, "_faults", None)))
+                self.result.notes.append(
+                    "reservoir: four states from the mechanistic generator")
         return self.result.states
 
     def rockphysics(self):
