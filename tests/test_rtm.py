@@ -81,6 +81,36 @@ def test_wavefield_store_round_trips_and_reports_its_backing():
         assert store[0].sum() == 8**3
 
 
+def test_stores_sharing_a_directory_do_not_collide(tmp_path):
+    """Several shots in one run share a workdir.
+
+    The backing files must be distinct and must be gone once closed:
+    Windows refuses to delete or reopen a file that is still mapped, so a
+    collision or a leaked mapping would fail on the second shot rather than
+    the first.
+    """
+    paths = []
+    for value in range(3):
+        with WavefieldStore((8, 8, 8), 4, dtype=np.float32, max_ram_bytes=1,
+                            directory=str(tmp_path)) as store:
+            assert store.backing == "memmap"
+            store.save(0, np.full((8, 8, 8), float(value), dtype=np.float32))
+            store.flush()
+            assert store[0][0, 0, 0] == value
+            paths.append(store.path)
+    assert len(set(paths)) == 3
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_a_temporary_store_removes_its_own_directory():
+    store = WavefieldStore((8, 8, 8), 4, dtype=np.float32, max_ram_bytes=1)
+    path = store.path
+    assert path.exists()
+    store.close()
+    assert not path.exists()
+    store.close()  # idempotent
+
+
 def test_laplacian_matches_the_analytic_second_derivative():
     """Second-order accurate, so the error must sit within the ``d^2/12`` bound."""
     n, d = 40, 0.5

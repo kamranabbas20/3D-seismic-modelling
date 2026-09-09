@@ -38,23 +38,54 @@ full chain — not for producing results.
 
 ## Install
 
+Python 3.10 or newer.
+
+**Linux / macOS**
+
 ```bash
-python -m venv .venv && .venv/bin/pip install -e ".[accel,dev]"
+python3 -m venv .venv
+.venv/bin/pip install -e ".[accel,dev]"
+source .venv/bin/activate          # optional: lets you drop the .venv/bin/ prefix
 ```
 
+**Windows (PowerShell)**
+
+```powershell
+python -m venv .venv
+.venv\Scripts\pip install -e ".[accel,dev]"
+.venv\Scripts\Activate.ps1        # optional: lets you drop the .venv\Scripts\ prefix
+```
+
+A virtual environment puts its executables in `bin/` on Unix and in
+`Scripts/` on Windows. If `Activate.ps1` is blocked by the execution
+policy, `Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass` lifts
+it for that window only and changes nothing machine-wide.
+
 `accel` pulls in Numba, which makes the finite-difference kernels roughly
-2.5× faster. Everything runs without it.
+2.5× faster. Everything runs without it. Forward slashes work in the
+configuration paths on every platform, so the commands below need no
+translation beyond the prefix.
 
 ## Try it
 
+The commands assume an activated environment. If you would rather not
+activate, prefix each one with `.venv/bin/` (Unix) or `.venv\Scripts\`
+(Windows).
+
 ```bash
+pytest -q                                            # 253 tests, ~50 s — the real proof
 sim3d physics                                        # what each mode does and does not model
 sim3d benchmark                                      # measure this machine
-sim3d describe   examples/configs/demo_small.yaml
-sim3d qc         examples/configs/demo_small.yaml    # the section 127 checks
-sim3d plan       examples/configs/demo_small.yaml --benchmark
-sim3d run        examples/configs/demo_small.yaml    # everything, ~8 minutes
+sim3d describe    examples/configs/demo_small.yaml
+sim3d qc          examples/configs/demo_small.yaml   # the section 127 checks
+sim3d rockphysics examples/configs/demo_small.yaml   # four earth models, ~15 s
+sim3d plan        examples/configs/demo_small.yaml --benchmark
+sim3d run         examples/configs/demo_small.yaml   # everything, ~13 min on 4 cores
 ```
+
+`sim3d rockphysics` is the best value for the time: the complete
+four-scenario property decomposition and the interaction term, with no wave
+modelling. Everything above it is free.
 
 `demo_small.yaml` is one injector and one producer 600 m apart, sized so the
 whole chain — four independent earth models, full-wave modelling, RTM, and
@@ -243,8 +274,11 @@ or a literature measurement — never against a stored output of this code.
   estimate with no bound status.
 
 ```bash
-.venv/bin/pytest -q          # 253 tests, ~50 s (includes the section 131 null test)
+pytest -q                    # 253 tests, ~50 s (includes the section 131 null test)
 ```
+
+Unactivated, that is `.venv/bin/pytest -q` on Unix and
+`.venv\Scripts\pytest -q` on Windows.
 
 ## Not implemented
 

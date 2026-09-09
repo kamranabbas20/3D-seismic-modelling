@@ -98,7 +98,8 @@ def test_confining_pressure_integrates_the_density_column():
     # A varying column integrates trapezoidally, not by a block sum.
     varying = np.broadcast_to(np.linspace(1800.0, 2600.0, 11), grid.shape).copy()
     q = confining_pressure_from_density(grid, varying, surface_pressure=0.0)
-    expected = 9.81 * np.trapezoid(varying[0, 0], dx=grid.dz)
+    column = varying[0, 0]
+    expected = 9.81 * grid.dz * (column.sum() - 0.5 * (column[0] + column[-1]))
     assert q[0, 0, -1] == pytest.approx(expected, rel=1e-12)
 
 

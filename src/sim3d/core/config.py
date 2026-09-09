@@ -270,7 +270,7 @@ class ExperimentConfig:
         path = Path(path)
         path.parent.mkdir(parents=True, exist_ok=True)
         text = yaml.safe_dump(self.to_dict(), sort_keys=False, default_flow_style=False)
-        path.write_text(text)
+        path.write_text(text, encoding="utf-8")
         return path
 
     @classmethod
@@ -282,7 +282,7 @@ class ExperimentConfig:
         path = Path(path)
         if not path.exists():
             raise ConfigError(f"configuration file not found: {path}")
-        text = path.read_text()
+        text = path.read_text(encoding="utf-8")
         data = json.loads(text) if path.suffix == ".json" else yaml.safe_load(text)
         if not isinstance(data, dict):
             raise ConfigError(f"{path} does not contain a mapping at the top level")

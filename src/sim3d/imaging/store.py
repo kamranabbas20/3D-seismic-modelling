@@ -15,6 +15,7 @@ quietly degrading the image.
 
 from __future__ import annotations
 
+import itertools
 import os
 import tempfile
 from pathlib import Path
@@ -22,6 +23,9 @@ from pathlib import Path
 import numpy as np
 
 from ..core.errors import ConfigError
+
+#: Distinguishes the backing files of stores that share a directory.
+_STORE_COUNTER = itertools.count()
 
 
 def safe_decimation(dt: float, fmax: float) -> int:
@@ -70,10 +74,17 @@ class WavefieldStore:
         else:
             self.backing = "memmap"
             if directory is None:
-                self._tempdir = tempfile.TemporaryDirectory(prefix="sim3d_wavefield_")
+                # ignore_cleanup_errors keeps a stray lock on the backing file
+                # from turning into an exception at the end of a long run.
+                self._tempdir = tempfile.TemporaryDirectory(
+                    prefix="sim3d_wavefield_", ignore_cleanup_errors=True)
                 directory = self._tempdir.name
             Path(directory).mkdir(parents=True, exist_ok=True)
-            self.path = Path(directory) / f"source_wavefield_{os.getpid()}.dat"
+            # The name is unique per store, not per process: several shots in
+            # one run share a workdir, and Windows will not let a new mapping
+            # replace a file that is still mapped by the previous one.
+            self.path = Path(directory) / (
+                f"source_wavefield_{os.getpid()}_{next(_STORE_COUNTER)}.npy")
             self.data = np.lib.format.open_memmap(
                 self.path, mode="w+", dtype=self.dtype, shape=full
             )
@@ -93,11 +104,34 @@ class WavefieldStore:
             self.data.flush()
 
     def close(self) -> None:
-        """Release the memmap and delete any temporary file."""
-        self.data = None
+        """Release the memmap and delete any temporary file.
+
+        The underlying mapping is closed explicitly rather than left to the
+        garbage collector: on Windows a file that is still mapped cannot be
+        deleted or reopened, so an implicit release would turn into a
+        PermissionError on the next shot.
+        """
+        data, self.data = self.data, None
+        if isinstance(data, np.memmap):
+            try:
+                data.flush()
+            except (ValueError, OSError):
+                pass
+            mapping = getattr(data, "_mmap", None)
+            if mapping is not None:
+                mapping.close()
+        del data
+
         if self._tempdir is not None:
             self._tempdir.cleanup()
             self._tempdir = None
+            self.path = None
+        elif self.path is not None and self.path.exists():
+            # A caller-supplied directory: remove our own file, keep theirs.
+            try:
+                self.path.unlink()
+            except OSError:
+                pass
             self.path = None
 
     def __enter__(self) -> "WavefieldStore":
