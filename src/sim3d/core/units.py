@@ -17,6 +17,12 @@ temperature             degC (see note)
 Temperature is the one deliberate exception: Batzle-Wang correlations are
 published in degrees Celsius, so temperature is carried in degC throughout
 and the unit string says so.  Nothing is converted silently.
+
+**Pressure is always shown to the user in psi**, and volumes and rates in
+the oilfield units an engineer reads without converting - STB, STB/day,
+Mscf/day, mD, days.  The solver stays in SI; the conversion happens once, at
+the display boundary, and is never something the user has to do in their
+head.
 """
 
 from __future__ import annotations
@@ -33,6 +39,13 @@ GCC = 1.0e3          # kg/m^3 per g/cm^3
 FT = 0.3048          # m per ft
 KM = 1.0e3           # m per km
 MS = 1.0e-3          # s per ms
+DAY = 86400.0        # s per day
+STB = 0.158987294928  # m^3 per stock-tank barrel
+SCF = 0.0283168466    # m^3 per standard cubic foot
+MSCF = 1.0e3 * SCF    # m^3 per thousand standard cubic feet
+MMSCF = 1.0e6 * SCF   # m^3 per million standard cubic feet
+MILLIDARCY = 9.869232667160128e-16   # m^2 per mD
+CENTIPOISE = 1.0e-3   # Pa.s per cP
 
 #: Canonical SI unit string for each physical quantity sim3d stores.
 SI_UNITS: dict[str, str] = {
@@ -50,6 +63,13 @@ SI_UNITS: dict[str, str] = {
     "salinity": "ppm",
     "gor": "L/L",
     "api": "degAPI",
+    "permeability": "m2",
+    "viscosity": "Pa.s",
+    "rate": "m3/s",
+    "volume": "m3",
+    "duration": "s",
+    "bhp": "Pa",
+    "dp": "Pa",
 }
 
 
@@ -93,13 +113,77 @@ def s_to_ms(value):
     return value / MS
 
 
+def psi_to_pa(value):
+    """Convert psi to Pa."""
+    return value * PSI
+
+
+def pa_to_psi(value):
+    """Convert Pa to psi - the unit every pressure is shown in."""
+    return value / PSI
+
+
+def days_to_seconds(value):
+    """Convert days to seconds.  Simulation time is stored in days."""
+    return value * DAY
+
+
+def seconds_to_days(value):
+    """Convert seconds to days."""
+    return value / DAY
+
+
+def stb_per_day_to_si(value):
+    """Convert STB/day to m^3/s."""
+    return value * STB / DAY
+
+
+def si_to_stb_per_day(value):
+    """Convert m^3/s to STB/day."""
+    return value * DAY / STB
+
+
+def mscf_per_day_to_si(value):
+    """Convert Mscf/day to m^3/s."""
+    return value * MSCF / DAY
+
+
+def si_to_mscf_per_day(value):
+    """Convert m^3/s to Mscf/day."""
+    return value * DAY / MSCF
+
+
+def md_to_si(value):
+    """Convert millidarcy to m^2."""
+    return value * MILLIDARCY
+
+
+def si_to_md(value):
+    """Convert m^2 to millidarcy."""
+    return value / MILLIDARCY
+
+
 #: Quantity name -> (display unit, factor such that ``si_value / factor`` is
 #: the displayed number).  Used only by the UI and reporting layers.
+#:
+#: Every pressure is psi.  There is no per-page choice and no toggle: a study
+#: that quotes depletion in bar on one screen and psi on another is a study
+#: whose numbers cannot be compared by eye.
 DISPLAY_UNITS: dict[str, tuple[str, float]] = {
-    "pressure": ("bar", BAR),
-    "p_pore": ("bar", BAR),
-    "p_conf": ("bar", BAR),
-    "p_eff": ("bar", BAR),
+    "pressure": ("psi", PSI),
+    "p_pore": ("psi", PSI),
+    "p_conf": ("psi", PSI),
+    "p_eff": ("psi", PSI),
+    "bhp": ("psi", PSI),
+    "dp": ("psi", PSI),
+    "permeability": ("mD", MILLIDARCY),
+    "viscosity": ("cP", CENTIPOISE),
+    "liquid_rate": ("STB/day", STB / DAY),
+    "water_rate": ("STB/day", STB / DAY),
+    "oil_rate": ("STB/day", STB / DAY),
+    "gas_rate": ("Mscf/day", MSCF / DAY),
+    "cumulative": ("STB", STB),
+    "duration": ("days", DAY),
     "rho": ("g/cc", GCC),
     "k": ("GPa", 1.0e9),
     "mu": ("GPa", 1.0e9),
@@ -152,9 +236,14 @@ class Quantity:
 #: Accepted non-SI input units per SI target unit, with their SI factors.
 _ALTERNATIVES: dict[str, dict[str, float]] = {
     "m": {"km": KM, "ft": FT},
-    "s": {"ms": MS},
+    "s": {"ms": MS, "days": DAY, "day": DAY, "years": 365.25 * DAY},
     "m/s": {"km/s": KM, "ft/s": FT},
+    "m2": {"mD": MILLIDARCY, "D": 1000 * MILLIDARCY},
+    "Pa.s": {"cP": CENTIPOISE},
+    "m3/s": {"STB/day": STB / DAY, "Mscf/day": MSCF / DAY, "MMscf/day": MMSCF / DAY},
+    "m3": {"STB": STB, "Mscf": MSCF, "MMscf": MMSCF},
     "kg/m3": {"g/cc": GCC, "g/cm3": GCC},
-    "Pa": {"bar": BAR, "MPa": MPA, "GPa": 1.0e9, "psi": PSI, "kPa": 1.0e3},
+    "Pa": {"bar": BAR, "MPa": MPA, "GPa": 1.0e9, "psi": PSI, "kPa": 1.0e3,
+           "psia": PSI},
     "Hz": {"kHz": 1.0e3},
 }

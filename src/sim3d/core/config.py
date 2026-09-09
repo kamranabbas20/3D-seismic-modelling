@@ -108,6 +108,9 @@ class WellsConfig:
     pattern: str = "demonstration"
     parameters: dict = field(default_factory=dict)
     min_spacing: float = 500.0
+    #: Explicit wells. When present these replace ``pattern`` entirely, which
+    #: is how a pattern placed with the mouse is stored.
+    wells: list = field(default_factory=list)
 
 
 @dataclass
@@ -132,6 +135,54 @@ class ScenarioConfig:
 class ReservoirConfig:
     baseline: BaselineConfig = field(default_factory=BaselineConfig)
     scenario: ScenarioConfig = field(default_factory=ScenarioConfig)
+
+
+@dataclass
+class WellSpec:
+    """One explicitly defined well, as the GUI writes it (requirements 1, 2, 10, 12)."""
+
+    name: str = "P1"
+    role: str = "producer"
+    x: float = 0.0
+    y: float = 0.0
+    #: Geological units the well is open in; empty means every reservoir unit.
+    completions: list = field(default_factory=list)
+    #: ``liquid_rate``, ``oil_rate``, ``water_rate`` or ``bhp``.
+    control: str = "liquid_rate"
+    #: Rate in STB/day, or BHP in psi when ``control`` is ``bhp``.
+    target: float | None = None
+    bhp_limit_psi: float | None = None
+    start_day: float = 0.0
+    end_day: float | None = None
+
+
+@dataclass
+class SimulationConfig:
+    """Flow-simulation duration and timestepping (requirement 7)."""
+
+    duration_days: float = 1825.0
+    report_every_days: float = 91.25
+    max_timestep_days: float = 30.0
+    #: The monitor survey is modelled at this time; ``None`` uses the end.
+    monitor_day: float | None = None
+    #: Corey relative permeability.
+    swc: float = 0.20
+    sor: float = 0.25
+    krw_max: float = 0.35
+    kro_max: float = 0.90
+    nw: float = 2.5
+    no: float = 2.0
+    water_viscosity_cp: float = 0.5
+    oil_viscosity_cp: float = 1.0
+    total_compressibility_per_psi: float = 3.0e-6
+    water_density: float = 1030.0
+    oil_density: float = 800.0
+    kv_over_kh: float = 0.1
+    gravity: bool = True
+    max_saturation_change: float = 0.05
+    #: Drawdown used when suggesting a rate for a new well, psi.
+    suggested_drawdown_psi: float = 500.0
+    sweep_years: float = 10.0
 
 
 @dataclass
@@ -232,6 +283,7 @@ class ExperimentConfig:
     geology: GeologyConfig = field(default_factory=GeologyConfig)
     wells: WellsConfig = field(default_factory=WellsConfig)
     reservoir: ReservoirConfig = field(default_factory=ReservoirConfig)
+    simulation: SimulationConfig = field(default_factory=SimulationConfig)
     rock_physics: RockPhysicsSection = field(default_factory=RockPhysicsSection)
     solver: SolverConfig = field(default_factory=SolverConfig)
     source: SourceConfig = field(default_factory=SourceConfig)
@@ -297,6 +349,8 @@ class ExperimentConfig:
             f"  well pattern      {self.wells.pattern}",
             f"  scenario          {self.reservoir.scenario.name} "
             f"at {self.reservoir.scenario.time_state}",
+            f"  simulation        {self.simulation.duration_days:g} days, "
+            f"reported every {self.simulation.report_every_days:g} days",
             f"  rock physics      {self.rock_physics.mineral_model} / "
             f"{self.rock_physics.dry_frame_model} / {self.rock_physics.fluid_mixing} / "
             f"{self.rock_physics.pressure_model}",

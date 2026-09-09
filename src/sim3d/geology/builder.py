@@ -45,6 +45,8 @@ class Layer:
     porosity: float | None = None
     vsh: float | None = None
     ntg: float | None = None
+    #: Constant permeability in mD; ``None`` derives it from porosity.
+    permeability: float | None = None
     #: Optional correlated heterogeneity added to porosity and shale volume.
     porosity_heterogeneity: HeterogeneitySpec | None = None
     vsh_heterogeneity: HeterogeneitySpec | None = None
@@ -68,11 +70,19 @@ class GeologyModel:
     porosity: np.ndarray
     vsh: np.ndarray
     ntg: np.ndarray
+    #: Absolute permeability in m^2 (display it in mD).
+    permeability: np.ndarray
     reservoir_mask: np.ndarray
     layers: list[Layer]
     faults: FaultSet
     horizons: dict[str, np.ndarray]
     catalogue: dict[str, Facies]
+
+    @property
+    def permeability_md(self) -> np.ndarray:
+        """Permeability in millidarcy, for display and reporting."""
+        from ..core.units import MILLIDARCY
+        return self.permeability / MILLIDARCY
 
     @property
     def composition(self) -> dict[str, np.ndarray]:
@@ -110,7 +120,9 @@ class GeologyModel:
                 f"    {i}: {layer.name:22s} ({layer.facies:16s}) "
                 f"{100 * mask.mean():5.1f}% of cells, "
                 f"phi {self.porosity[mask].min():.3f}-{self.porosity[mask].max():.3f}, "
-                f"Vsh {self.vsh[mask].min():.3f}-{self.vsh[mask].max():.3f}"
+                f"Vsh {self.vsh[mask].min():.3f}-{self.vsh[mask].max():.3f}, "
+                f"k {self.permeability_md[mask].min():.3g}-"
+                f"{self.permeability_md[mask].max():.3g} mD"
             )
         lines.append(f"  reservoir cells: {100 * self.reservoir_mask.mean():.1f}%")
         if len(self.faults):
@@ -157,6 +169,7 @@ def build_geology(grid: Grid3D, layers: list[Layer], faults: FaultSet | None = N
     porosity = np.zeros(grid.shape)
     vsh = np.zeros(grid.shape)
     ntg = np.zeros(grid.shape)
+    permeability = np.zeros(grid.shape)
     reservoir = np.zeros(grid.shape, dtype=bool)
 
     for i, layer in enumerate(layers):
@@ -180,14 +193,45 @@ def build_geology(grid: Grid3D, layers: list[Layer], faults: FaultSet | None = N
         vsh[mask] = np.clip(shale, 0.0, 1.0)[mask]
 
         ntg[mask] = layer.ntg if layer.ntg is not None else facies.midpoint("ntg")
+        permeability[mask] = _permeability(porosity, facies, layer)[mask]
         is_res = facies.is_reservoir if layer.is_reservoir is None else layer.is_reservoir
         reservoir[mask] = is_res
 
     return GeologyModel(
         grid=grid, layer_index=layer_index, facies_code=facies_code,
-        porosity=porosity, vsh=vsh, ntg=ntg, reservoir_mask=reservoir,
-        layers=list(layers), faults=faults, horizons=horizons, catalogue=catalogue,
+        porosity=porosity, vsh=vsh, ntg=ntg, permeability=permeability,
+        reservoir_mask=reservoir, layers=list(layers), faults=faults,
+        horizons=horizons, catalogue=catalogue,
     )
+
+
+def _permeability(porosity: np.ndarray, facies: Facies, layer: Layer) -> np.ndarray:
+    r"""Permeability from porosity, log-linear within the facies' own range.
+
+    .. math:: \log_{10} k = \log_{10}k_{lo}
+              + rac{\phi - \phi_{lo}}{\phi_{hi} - \phi_{lo}}
+                ig(\log_{10}k_{hi} - \log_{10}k_{lo}ig)
+
+    Permeability spans orders of magnitude for a few porosity units, so the
+    interpolation is in log space; doing it linearly would put most of a
+    reservoir at implausibly high permeability.
+
+    This is a placeholder transform, not a measurement: it is monotonic,
+    honours the facies table's endpoints, and is stated here rather than
+    buried, so a study whose conclusions depend on the porosity-permeability
+    relation can replace it with a calibrated one.  An explicit
+    ``layer.permeability`` overrides it entirely.
+    """
+    from ..core.units import MILLIDARCY
+
+    if layer.permeability is not None:
+        return np.full(porosity.shape, float(layer.permeability) * MILLIDARCY)
+    phi_lo, phi_hi = facies.porosity
+    k_lo, k_hi = facies.permeability
+    span = max(phi_hi - phi_lo, 1e-9)
+    fraction = np.clip((porosity - phi_lo) / span, 0.0, 1.0)
+    log_k = np.log10(k_lo) + fraction * (np.log10(k_hi) - np.log10(k_lo))
+    return 10.0**log_k * MILLIDARCY
 
 
 def _layer_property(grid, layer: Layer, attribute: str, facies: Facies,

@@ -126,6 +126,51 @@ def build_states(baseline: ReservoirState, scenario: ReservoirScenario,
     return states
 
 
+def build_states_from_flow(baseline: ReservoirState, flow, day: float,
+                           start_day: float = 0.0) -> FourDStates:
+    """The four earth states from a flow simulation between two times.
+
+    A coupled simulation gives one monitor state, not four - pressure and
+    saturation move together, because that is what they do.  The isolated
+    cases are still recoverable, and are more meaningful than the ones a
+    parametric generator produces, because both halves now come from a
+    physically consistent history:
+
+    * **pressure-only** takes the simulated pressure at ``day`` and the
+      *baseline* saturations;
+    * **saturation-only** takes the simulated saturations and the *baseline*
+      pressure.
+
+    Neither is a state the reservoir ever passed through.  That is the
+    point: they are the two counterfactual earths that separate the seismic
+    response of the pressure change from that of the saturation change, and
+    the interaction term measures what is lost by treating them separately.
+    """
+    reference = flow.state_at(start_day, baseline)
+    monitor = flow.state_at(day, baseline)
+
+    pressure_only = reference.copy(name="pressure_only")
+    pressure_only.pressure = monitor.pressure.copy()
+
+    saturation_only = reference.copy(name="saturation_only")
+    saturation_only.sw = monitor.sw.copy()
+    saturation_only.so = monitor.so.copy()
+    saturation_only.sg = monitor.sg.copy()
+
+    for state, note in ((pressure_only, "simulated pressure, baseline saturation"),
+                        (saturation_only, "simulated saturation, baseline pressure")):
+        state.provenance = [*reference.provenance,
+                            f"flow simulation day {start_day:g} to {day:g}: {note}"]
+        state.validate()
+
+    states = FourDStates(baseline=reference.copy(name="baseline"),
+                         pressure_only=pressure_only,
+                         saturation_only=saturation_only,
+                         combined=monitor.copy(name="combined"))
+    states.check_isolation()
+    return states
+
+
 def confining_pressure_from_density(grid: Grid3D, density: np.ndarray,
                                     surface_pressure: float = 101325.0) -> np.ndarray:
     """Lithostatic stress by integrating a density column, in Pa.
