@@ -1,18 +1,24 @@
-# A deliberately small end-to-end demonstration.
+# sim2seis: the geological model converted into a synthetic seismic volume.
 #
-# One injector and one producer 600 m apart, a flat reservoir, and a sparse
-# OBN survey - sized so that the full chain (four earth models, full-wave
-# modelling, RTM, and the 4D decomposition) completes in minutes on a
-# laptop CPU rather than overnight.
+# Same earth as demo_small.yaml, but the seismic step converts the whole
+# model column by column instead of propagating and migrating a survey.
+# Four earth models x three angle stacks in seconds; the flow simulation
+# upstream is what takes the time.
 #
-# It is a demonstration of the *workflow*, not a research-resolution result:
-# 8 Hz is a low peak frequency and nine shots is a very sparse survey.
-# `sim3d plan examples/configs/research_standard.yaml` shows what a
-# research-resolution run of the same workflow actually costs.
+# What you get: a 3D cube per angle stack per scenario, in two-way time and
+# in depth, the 4D differences between them, and NRMS by stack.
+#
+# What you do not get, and cannot: lateral propagation, diffraction,
+# multiples, illumination, offset-to-angle mapping, or migration - so
+# dipping structure is mispositioned and the stacks are constant-angle.
+# It models what the reservoir would look like in seismic, not what the
+# survey would record.
+#
+#     sim3d sim2seis examples/configs/sim2seis.yaml
 
 project:
-  name: demo_small
-  description: Minimal end-to-end injector/producer 4D experiment
+  name: sim2seis
+  description: A synthetic seismic volume converted from the earth model
   seed: 1
 
 domains:
@@ -99,15 +105,13 @@ imaging:
   # second seismic mode, which skips propagation entirely and builds K
   # vertical 1D traces instead - seconds rather than minutes, and a
   # screening result rather than an image.
-  method: RTM
+  method: sim2seis
   imaging_condition: source_normalized
   laplacian_filter: true
 
 synthetic:
-  # Where the sparse mode puts its K traces. 'wells' is one trace per well,
-  # which is the layout that answers the question the wells were placed to
-  # ask; 'grid' spreads exactly `count` over the target; 'points' takes an
-  # explicit list of [x, y].
+  # One trace per well. Switch to 'grid' with a count to spread exactly K
+  # traces over the target instead, or 'points' for explicit [x, y] pairs.
   layout: wells
   count: 9
   points: []

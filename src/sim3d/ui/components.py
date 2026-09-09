@@ -288,6 +288,31 @@ def bar_figure(centres, counts, *, xlabel: str, ylabel: str, width: float | None
     return fig
 
 
+def section_figure(data: np.ndarray, x, y, *, xlabel: str, ylabel: str,
+                   title: str = "", height: int = 420,
+                   robust: bool = True) -> go.Figure:
+    """A seismic section: a physical x axis and a downward y axis.
+
+    Distinct from :func:`gather_figure`, which numbers its traces, and from
+    :func:`slice_figure`, which cuts a depth volume: this is one panel of a
+    time-domain cube, so both axes carry real units.
+    """
+    values = np.asarray(data, dtype=float)
+    lo, hi = _limits(values, "diverging", robust)
+    fig = go.Figure(go.Heatmap(
+        z=values, x=np.asarray(x, dtype=float), y=np.asarray(y, dtype=float),
+        zmin=lo, zmax=hi, colorscale=theme.SEISMIC,
+        colorbar=dict(title="amplitude", thickness=12),
+        hovertemplate=(f"{xlabel} %{{x:,.0f}}<br>{ylabel} %{{y:.3f}}"
+                       f"<br>%{{z:.4g}}<extra></extra>")))
+    fig.update_layout(**theme.plotly_layout(
+        title=dict(text=title, font=dict(size=14)), height=height,
+        xaxis_title=xlabel, yaxis_title=ylabel,
+        yaxis=dict(autorange="reversed", gridcolor=theme.GRIDLINE,
+                   linecolor=theme.AXIS, tickfont=dict(color=theme.INK_MUTED))))
+    return fig
+
+
 def gather_figure(traces: np.ndarray, dt: float, *, title: str = "",
                   height: int = 460, robust: bool = True) -> go.Figure:
     """Variable-density display of one shot gather, trace number against time."""

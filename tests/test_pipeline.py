@@ -339,3 +339,95 @@ def test_the_synthetic_cli_command_runs(capsys, tmp_path):
     printed = capsys.readouterr().out
     assert "Not Full 3D Wave Modelling" in printed
     assert "NRMS against baseline" in printed
+
+
+# ------------------------------------------------------ the sim2seis volume
+def sim2seis_config():
+    config = tiny_config()
+    config.reservoir.source = "mechanistic"
+    return config
+
+
+def test_the_volume_covers_every_scenario_and_stack():
+    pipe = Pipeline(sim2seis_config())
+    volumes = pipe.sim2seis()
+    assert set(volumes) == set(SCENARIO_NAMES)
+    assert volumes["baseline"].names == ("near", "mid", "far")
+
+
+def test_all_four_scenarios_share_one_time_axis():
+    """Cubes on different axes cannot be differenced.
+
+    Each scenario has its own velocities and so its own deepest two-way
+    time; letting each end where it likes puts the monitors on axes the
+    baseline cannot be subtracted from.
+    """
+    volumes = Pipeline(sim2seis_config()).sim2seis()
+    axes = {v.times.shape for v in volumes.values()}
+    assert len(axes) == 1
+    reference = volumes["baseline"].times
+    for volume in volumes.values():
+        assert np.array_equal(volume.times, reference)
+
+
+def test_the_time_window_is_not_the_solver_record_length():
+    """The solver listens from sources near the reservoir; a synthetic column
+    is timed from the surface and needs the whole overburden."""
+    config = sim2seis_config()
+    config.solver.record_length = 0.2          # far too short to reach the target
+    volumes = Pipeline(config).sim2seis()
+    assert volumes["baseline"].times[-1] > 0.2
+
+
+def test_the_window_reaches_the_deepest_two_way_time():
+    volumes = Pipeline(sim2seis_config()).sim2seis()
+    volume = volumes["baseline"]
+    assert volume.times[-1] >= volume.twt.max() - 1e-9
+
+
+def test_the_sample_interval_is_a_conventional_one():
+    pipe = Pipeline(sim2seis_config())
+    assert pipe.seismic_sample_interval() in Pipeline.SAMPLE_LADDER
+
+
+def test_the_sample_interval_can_be_pinned():
+    config = sim2seis_config()
+    config.sim2seis.sample_interval = 0.0005
+    assert Pipeline(config).seismic_sample_interval() == pytest.approx(0.0005)
+
+
+def test_a_flood_moves_the_synthetic_volume():
+    volumes = Pipeline(sim2seis_config()).sim2seis()
+    difference = (volumes["saturation_only"].time_cubes["near"]
+                  - volumes["baseline"].time_cubes["near"])
+    assert np.abs(difference).max() > 0.0
+
+
+def test_the_decomposition_reports_every_stack_separately():
+    """Collapsing near and far into one number throws away the discrimination
+    the stacks exist to provide."""
+    pipe = Pipeline(sim2seis_config())
+    pipe.sim2seis()
+    out = pipe.decompose()
+    assert set(out["seismic"]["sim2seis"]) == {"near", "mid", "far"}
+    per_stack = out["seismic"]["sim2seis_nrms"]
+    assert set(per_stack) == {"near", "mid", "far"}
+    assert set(per_stack["near"]) == set(SCENARIO_NAMES[1:])
+
+
+def test_the_volume_needs_no_wells_and_no_acquisition():
+    """It converts the earth model itself, so it must not drag in a survey."""
+    pipe = Pipeline(sim2seis_config())
+    pipe.sim2seis()
+    assert pipe.result.acquisition is None
+    assert not pipe.result.gathers
+
+
+def test_the_sim2seis_cli_command_runs(capsys, tmp_path):
+    config = sim2seis_config()
+    path = tmp_path / "tiny.yaml"
+    config.save(path)
+    assert main(["sim2seis", str(path)]) == 0
+    printed = capsys.readouterr().out
+    assert "Not Full 3D Wave Modelling" in printed
+    assert "near" in printed and "far" in printed

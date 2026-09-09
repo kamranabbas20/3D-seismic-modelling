@@ -316,3 +316,22 @@ def test_labels_are_dropped_when_the_extrema_coincide():
         ylabel="two-way time (s)")
     assert not figure.layout.annotations
     assert all(trace.showlegend for trace in figure.data)   # identity survives
+
+
+def test_a_section_carries_real_units_on_both_axes():
+    """Unlike a gather, which numbers its traces."""
+    data = np.random.default_rng(0).normal(size=(40, 20))
+    figure = ui.section_figure(data, np.linspace(0, 1000, 20),
+                               np.linspace(0, 1.6, 40),
+                               xlabel="x (m)", ylabel="two-way time (s)")
+    assert figure.layout.yaxis.autorange == "reversed"
+    assert figure.data[0].x[-1] == pytest.approx(1000.0)
+    assert figure.data[0].y[-1] == pytest.approx(1.6)
+
+
+def test_a_section_is_symmetric_about_zero():
+    """Signed amplitude needs a diverging scale with matched limits."""
+    data = np.concatenate([np.full((5, 4), -1.0), np.full((5, 4), 4.0)])
+    figure = ui.section_figure(data, np.arange(4), np.arange(10),
+                               xlabel="x (m)", ylabel="t (s)", robust=False)
+    assert figure.data[0].zmin == pytest.approx(-figure.data[0].zmax)

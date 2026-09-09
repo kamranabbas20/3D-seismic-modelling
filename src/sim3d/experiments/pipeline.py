@@ -39,7 +39,8 @@ from ..fourd.scenarios import (
 from ..geology.builder import GeologyModel, build_geology
 from ..geology.templates import template
 from ..imaging.rtm import RTMSettings, RTMResult, migrate_survey
-from ..processing.preview import convolution_preview
+from ..processing.preview import convolution_preview, time_from_depth
+from ..processing.sim2seis import sim2seis_volume
 from ..processing.sparse import resolve_locations, sparse_synthetic
 from ..reservoir.mechanistic import (
     GasBreakout, PressureHalo, ReservoirScenario, SaturationFront,
@@ -63,7 +64,7 @@ from ..wells.well import Well, WellSet, pattern
 
 STAGES = ("geology", "wells", "completions", "controls", "flow", "reservoir",
           "rockphysics", "acquisition", "qc", "plan", "preview", "synthetic",
-          "simulate", "migrate", "decompose")
+          "sim2seis", "simulate", "migrate", "decompose")
 
 DTYPES = {"float32": np.float32, "float64": np.float64}
 
@@ -88,6 +89,7 @@ class ExperimentResult:
     cost: object | None = None
     preview: dict | None = None
     synthetics: dict | None = None
+    volumes: dict | None = None
     gathers: dict[str, list[ShotRecord]] = field(default_factory=dict)
     images: dict[str, RTMResult] = field(default_factory=dict)
     decomposition: dict | None = None
@@ -463,6 +465,70 @@ class Pipeline:
             })
         return self.result.synthetics
 
+    def sim2seis(self, progress=None) -> dict:
+        """Convert every earth model into a synthetic seismic volume.
+
+        The whole model, column by column, in angle stacks - the product a
+        reservoir study compares against real seismic.  No wavefield is
+        propagated and nothing is migrated, so it costs seconds rather than
+        the hours a survey would, and it is never an image.
+        """
+        if self.result.volumes is None:
+            earth = self.rockphysics()
+            cfg = self.config.sim2seis
+            grid = earth.models["baseline"].grid
+            dt = self.seismic_sample_interval()
+            wavelet = ricker(np.arange(int(2.0 / dt)) * dt, self.config.source.frequency)
+            # One time axis for all four, set by the slowest of them. Letting
+            # each scenario end at its own deepest two-way time would put the
+            # monitors on axes a baseline cannot be subtracted from - the same
+            # trap ``common_dt`` exists to close on the modelled gathers.
+            t_max = cfg.record_length or max(
+                float(time_from_depth(earth.rock_physics[n].vp, grid.dz).max())
+                for n in self.config.fourd.scenarios)
+
+            def build() -> dict:
+                out = {}
+                for i, name in enumerate(self.config.fourd.scenarios):
+                    rock = earth.rock_physics[name]
+                    out[name] = sim2seis_volume(
+                        grid, rock.vp, rock.vs, rock.rho, wavelet, dt,
+                        stacks=cfg.stacks, sub_angles=cfg.sub_angles,
+                        map_to_depth=cfg.map_to_depth,
+                        t_max=t_max, scenario=name)
+                    if progress is not None:
+                        progress(name, i + 1, len(self.config.fourd.scenarios))
+                return out
+
+            self.result.volumes = self._timed("sim2seis", build)
+            for note in self.result.volumes["baseline"].notes:
+                self.result.notes.append(f"sim2seis: {note}")
+        return self.result.volumes
+
+    #: The sample intervals real seismic is written at, coarsest first.
+    SAMPLE_LADDER = (0.004, 0.002, 0.001)
+
+    def seismic_sample_interval(self) -> float:
+        """Time sampling for the synthetic volume, seconds.
+
+        The finite-difference dt is set by stability, not by bandwidth, and
+        is far finer than any seismic sample interval; using it would make
+        the cubes tens of times larger for no extra information.  Nyquist
+        alone would allow something coarser still - 13 ms for an 8 Hz
+        source - but a cube sampled at twice Nyquist is chunky to read and
+        picks poorly, so this takes the coarsest *conventional* interval
+        that still gives at least eight samples across the shortest period
+        in the wavelet, and refuses to invent one in between.
+        """
+        explicit = self.config.sim2seis.sample_interval
+        if explicit:
+            return float(explicit)
+        limit = 1.0 / (8.0 * self.fmax)
+        for interval in self.SAMPLE_LADDER:
+            if interval <= limit:
+                return interval
+        return self.SAMPLE_LADDER[-1]
+
     def simulate(self, progress=None) -> dict[str, list[ShotRecord]]:
         """Forward-model shot gathers for every scenario, independently."""
         if self.result.gathers:
@@ -575,6 +641,24 @@ class Pipeline:
                 for n in SCENARIO_NAMES[1:]
             }
             out["trace_locations"] = synth["baseline"].locations
+
+        volumes = self.result.volumes
+        if volumes and set(SCENARIO_NAMES) <= set(volumes):
+            # One decomposition per angle stack: the whole point of having
+            # near and far is that they do not respond alike, so collapsing
+            # them into one number would throw away the discrimination the
+            # stacks exist to provide.
+            out["seismic"]["sim2seis"] = {
+                stack: decompose(*[volumes[n].time_cubes[stack]
+                                   for n in SCENARIO_NAMES])
+                for stack in volumes["baseline"].names
+            }
+            out["seismic"]["sim2seis_nrms"] = {
+                stack: {n: nrms(volumes["baseline"].time_cubes[stack],
+                                volumes[n].time_cubes[stack])
+                        for n in SCENARIO_NAMES[1:]}
+                for stack in volumes["baseline"].names
+            }
         self.result.decomposition = out
         return out
 

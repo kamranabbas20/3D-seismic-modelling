@@ -13,6 +13,7 @@ science lives here.
     sim3d benchmark                measure this machine's throughput
     sim3d preview    model.yaml    fast 1D convolution screening
     sim3d synthetic  model.yaml    K vertical 1D synthetic traces
+    sim3d sim2seis   model.yaml    synthetic seismic volume in angle stacks
     sim3d simulate   model.yaml    full-wave shot gathers, one set per earth model
     sim3d migrate    model.yaml    3D RTM of every scenario
     sim3d decompose  model.yaml    the 4D difference and the interaction term
@@ -68,7 +69,7 @@ def cmd_describe(args) -> int:
 
 
 def cmd_physics(args) -> int:
-    modes = ["convolution", "sparse_synthetic", "acoustic_fd", "rtm"]
+    modes = ["convolution", "sparse_synthetic", "sim2seis", "acoustic_fd", "rtm"]
     _heading("Physics of each simulation mode (spec section 83)")
     print(physics_table(modes))
     return 0
@@ -227,6 +228,27 @@ def cmd_synthetic(args) -> int:
     return 0
 
 
+def cmd_sim2seis(args) -> int:
+    pipeline = _load(args.config)
+    _heading("Synthetic seismic volume (sim2seis)")
+    volumes = pipeline.sim2seis()
+    base = volumes["baseline"]
+    print(base.describe())
+    for note in base.notes:
+        print(f"  note: {note}")
+    print("\n  NRMS against baseline, per angle stack (%)")
+    header = "    " + f"{'stack':<10}" + "".join(f"{n:>18s}" for n in SCENARIO_NAMES[1:])
+    print(header)
+    for stack in base.names:
+        cells = "".join(
+            f"{nrms(base.time_cubes[stack], volumes[n].time_cubes[stack]):>18.3f}"
+            for n in SCENARIO_NAMES[1:] if n in volumes)
+        print(f"    {stack:<10}{cells}")
+    print("\n  A stack whose 4D response falls with angle while another rises is\n"
+          "  the AVO discrimination between a pressure change and a fluid one.")
+    return 0
+
+
 def cmd_simulate(args) -> int:
     pipeline = _load(args.config)
     if pipeline.qc().failed and not args.force:
@@ -351,6 +373,7 @@ def build_parser() -> argparse.ArgumentParser:
                      help="do not try to open a browser")
     add("preview", cmd_preview, "fast 1D convolution screening")
     add("synthetic", cmd_synthetic, "K vertical 1D synthetic traces")
+    add("sim2seis", cmd_sim2seis, "synthetic seismic volume in angle stacks")
     add("simulate", cmd_simulate, "model shot gathers for every earth model") \
         .add_argument("--force", action="store_true", help="proceed despite failed QC")
     add("migrate", cmd_migrate, "run 3D RTM on every scenario") \

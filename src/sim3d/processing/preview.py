@@ -67,17 +67,32 @@ def reflectivity(impedance: np.ndarray) -> np.ndarray:
 
 def synthetic_columns(twt: np.ndarray, impedance: np.ndarray, wavelet: np.ndarray,
                       dt: float, nt: int, map_to_depth: bool = True):
+    """Impedance -> reflectivity -> the chain in :func:`convolve_reflectivity`."""
+    return convolve_reflectivity(twt, reflectivity(impedance), wavelet, dt, nt,
+                                 map_to_depth=map_to_depth)
+
+
+def convolve_reflectivity(twt: np.ndarray, rc: np.ndarray, wavelet: np.ndarray,
+                          dt: float, nt: int, map_to_depth: bool = True):
     """Reflectivity -> time series -> convolution -> optional depth mapping.
 
-    The shared core of both synthetic modes.  ``twt`` and ``impedance`` are
-    ``(..., nz)``; every axis before the last is an independent column, so
-    the same code serves the full cube and a handful of well locations, and
-    the timing convention below cannot drift between them.
+    The shared core of every synthetic mode.  ``twt`` is ``(..., nz)`` and
+    ``rc`` is ``(..., nz - 1)``, defined on the interfaces between depth
+    nodes; every axis before the last is an independent column, so the same
+    code serves the full cube, an angle stack and a handful of well
+    locations, and the timing convention below cannot drift between them.
+
+    Taking reflectivity rather than impedance is what lets the angle-
+    dependent modes in :mod:`sim3d.processing.sim2seis` share this chain:
+    their coefficients are not the contrast of any single quantity.
 
     Returns ``(traces, times, depth_traces)``, the last being ``None`` when
     ``map_to_depth`` is false.
     """
-    rc = reflectivity(impedance)
+    if rc.shape[-1] != twt.shape[-1] - 1:
+        raise ConfigError(
+            f"reflectivity is defined on interfaces, so its last axis must be "
+            f"one shorter than the depth axis; got {rc.shape} against {twt.shape}")
     # Place each coefficient at the midpoint time of its interface.
     rc_time = 0.5 * (twt[..., 1:] + twt[..., :-1])
 

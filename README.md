@@ -31,6 +31,32 @@ reservoir physics → rock physics → wave physics → acquisition → imaging 
    → 4D decomposition into pressure, saturation and interaction
 ```
 
+### sim2seis — the model converted to seismic
+
+```
+3D earth model (Vp, Vs, density, per scenario)
+   → angle-dependent reflectivity (Aki-Richards)
+   → near / mid / far angle stacks
+   → convolution down every column
+   → synthetic seismic volume, in two-way time and in depth
+   → baseline vs monitor differences, NRMS per stack
+```
+
+`sim3d sim2seis` converts the whole geological model into a synthetic
+seismic volume, column by column, without propagating anything. Four earth
+models in three angle stacks takes seconds. It is the cube a reservoir
+study compares against real seismic, and the angle stacks are the point:
+on `demo_small` the 4D response **falls** with angle for a pressure change
+(6.6 → 5.0 % NRMS) and **rises** for a fluid change (8.6 → 8.9 %), which is
+the AVO discrimination between the two.
+
+It is not, and cannot be, what a survey would record. Every trace is built
+independently of its neighbours, so nothing moves sideways: no diffraction,
+no multiples, no illumination, no migration — dipping structure is
+mispositioned, and the stacks are constant-angle because a 1D column has no
+offset axis to map from. A zero-angle stack equals the normal-incidence
+convolution exactly, which a test pins.
+
 ### Two screening modes beside it
 
 Neither propagates a wavefield, both are labelled everywhere they appear,
@@ -42,6 +68,7 @@ full chain.
 | --- | --- | --- |
 | `sim3d preview` | the whole property cube filtered by the wavelet | 1.5 s |
 | `sim3d synthetic` | **K vertical 1D traces** at chosen locations | 20 ms |
+| `sim3d sim2seis` | **the full cube**, in angle stacks, all four scenarios | 8 s |
 | `sim3d migrate` | the migrated image, from modelled gathers | ~10 min |
 
 The sparse mode (`imaging.method: sparse_synthetic`) is the one to reach
@@ -95,7 +122,7 @@ activate, prefix each one with `.venv/bin/` (Unix) or `.venv\Scripts\`
 (Windows).
 
 ```bash
-pytest -q                                            # 380 tests, ~75 s — the real proof
+pytest -q                                            # 417 tests, ~75 s — the real proof
 sim3d physics                                        # what each mode does and does not model
 sim3d benchmark                                      # measure this machine
 sim3d describe    examples/configs/demo_small.yaml
@@ -104,6 +131,7 @@ sim3d rockphysics examples/configs/demo_small.yaml   # four earth models, ~15 s
 sim3d plan        examples/configs/demo_small.yaml --benchmark
 sim3d preview     examples/configs/demo_small.yaml   # 1D convolution cube
 sim3d synthetic   examples/configs/sparse_synthetic.yaml  # K vertical traces
+sim3d sim2seis    examples/configs/sim2seis.yaml       # the synthetic volume
 sim3d run         examples/configs/demo_small.yaml   # everything, ~13 min on 4 cores
 ```
 
@@ -299,7 +327,7 @@ src/sim3d/
   ui/            the Streamlit front end, its display components and the
                  3D scene
   cli.py
-tests/           380 tests, ~75 seconds
+tests/           417 tests, ~75 seconds
 examples/configs/
 docs/
 ```
@@ -364,7 +392,7 @@ or a literature measurement — never against a stored output of this code.
   estimate with no bound status.
 
 ```bash
-pytest -q                    # 380 tests, ~75 s (includes the section 131 null test)
+pytest -q                    # 417 tests, ~75 s (includes the section 131 null test)
 ```
 
 Unactivated, that is `.venv/bin/pytest -q` on Unix and

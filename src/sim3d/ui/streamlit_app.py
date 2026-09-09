@@ -34,6 +34,7 @@ from sim3d.core.errors import Sim3DError
 from sim3d.core.graph import explain as explain_dependencies
 from sim3d.core.units import PSI, pa_to_psi, psi_to_pa, si_to_stb_per_day
 from sim3d.io import ScenarioStore, ViewState
+from sim3d.processing.sim2seis import build_stacks
 from sim3d.processing.sparse import LAYOUTS
 from sim3d.ui import view3d
 from sim3d.wells.completion import layer_intersections, resolve_completions
@@ -49,8 +50,9 @@ from sim3d.validation.qc import Status
 EXAMPLES = sorted(Path("examples/configs").glob("*.yaml")) if Path("examples/configs").is_dir() else []
 
 PAGES = ("Project", "Geology", "3D Model", "Wells & Completions",
-         "Flow Simulation", "Rock Physics", "Acquisition & QC",
-         "Simulation & Imaging", "4D Analysis", "Scenarios")
+         "Flow Simulation", "Rock Physics", "Synthetic Volume",
+         "Acquisition & QC", "Simulation & Imaging", "4D Analysis",
+         "Scenarios")
 
 WELL_TYPES = ("producer", "injector")
 
@@ -585,6 +587,114 @@ def _sparse_section(pipe) -> None:
                    "diluted by every cell that did not change.")
 
 
+def page_sim2seis() -> None:
+    pipe = pipeline()
+    st.title("Synthetic seismic volume")
+    st.caption("The earth model converted to seismic, column by column, in "
+               "angle stacks — the sim2seis path. Seconds, not hours, because "
+               "nothing is propagated and nothing is migrated.")
+
+    cfg = config().sim2seis
+    with st.expander("Angle stacks", expanded=not pipe.result.volumes):
+        rows = []
+        for stack in cfg.stacks:
+            lo, hi = (float(a) for a in stack["angles"])
+            c1, c2 = st.columns(2)
+            low = c1.slider(f"{stack['name']} — from (deg)", 0.0, 60.0, lo, 1.0,
+                            key=f"a_lo_{stack['name']}")
+            high = c2.slider(f"{stack['name']} — to (deg)", 0.0, 60.0, hi, 1.0,
+                             key=f"a_hi_{stack['name']}")
+            rows.append({"name": stack["name"], "angles": [low, high]})
+        if rows != cfg.stacks:
+            try:
+                build_stacks(rows)
+            except Sim3DError as exc:
+                st.error(str(exc))
+            else:
+                cfg.stacks = rows
+                invalidate()
+        st.caption("Beyond about 45 degrees the Aki-Richards linearisation "
+                   "stops being trustworthy, and the tool says so rather than "
+                   "quietly extrapolating.")
+
+    if st.button("Build synthetic volume", type="primary"):
+        progress = st.progress(0.0, text="converting")
+
+        def report(name, done, count):
+            progress.progress(min(done / count, 1.0), text=f"{name}")
+        try:
+            pipe.sim2seis(progress=report)
+        except Sim3DError as exc:
+            st.error(str(exc))
+        progress.empty()
+
+    volumes = pipe.result.volumes
+    if not volumes:
+        st.info("No volume yet. It takes seconds — the rock physics above it "
+                "is the part that costs time.")
+        return
+
+    base = volumes["baseline"]
+    st.caption(base.label)
+    for note in base.notes:
+        st.warning(note)
+
+    grid = base.grid
+    point = cursor_controls(grid)
+    a, b, c = st.columns(3)
+    stack = a.selectbox("Angle stack", list(base.names))
+    scenario = b.selectbox("Earth model", list(volumes))
+    domain = c.radio("Axis", ["depth", "time"], horizontal=True, key="s2s_axis")
+
+    st.subheader("Volume")
+    if domain == "depth":
+        st.plotly_chart(ui.slice_figure(
+            volumes[scenario].depth_cube(stack), grid, point,
+            title=f"{scenario} — {stack}", kind="diverging", unit="amplitude",
+            wells=pipe.wells()), width="stretch")
+    else:
+        _time_slices(volumes[scenario].time_cube(stack), base, stack, scenario)
+
+    if scenario != "baseline":
+        st.subheader("Difference from baseline")
+        difference = (volumes[scenario].depth_cube(stack).astype(float)
+                      - base.depth_cube(stack).astype(float))
+        st.plotly_chart(ui.slice_figure(
+            difference, grid, point, title=f"{scenario} − baseline — {stack}",
+            kind="diverging", unit="amplitude", wells=pipe.wells()),
+            width="stretch")
+
+    st.subheader("Repeatability by angle stack")
+    rows = {}
+    for name in list(volumes)[1:]:
+        rows[name] = {
+            s: round(nrms(base.time_cubes[s], volumes[name].time_cubes[s]), 3)
+            for s in base.names}
+    if rows:
+        st.dataframe(rows, width="stretch")
+        st.caption("A response that falls with angle while another rises is "
+                   "the AVO discrimination between a pressure change and a "
+                   "fluid one — the reason to carry more than one stack.")
+    st.caption(f"{base.megabytes:,.0f} MB per earth model in memory.")
+
+
+def _time_slices(cube, base, stack: str, scenario: str) -> None:
+    """Inline and crossline sections against the two-way time axis."""
+    nx, ny, _ = cube.shape
+    a, b = st.columns(2)
+    iy = a.slider("inline (y index)", 0, ny - 1, ny // 2, key="s2s_il")
+    ix = b.slider("crossline (x index)", 0, nx - 1, nx // 2, key="s2s_xl")
+    left, right = st.columns(2)
+    left.plotly_chart(ui.section_figure(
+        cube[:, iy, :].T, base.grid.axis("x"), base.times,
+        xlabel="x (m)", ylabel="two-way time (s)",
+        title=f"inline — {scenario} · {stack}"), width="stretch")
+    right.plotly_chart(ui.section_figure(
+        cube[ix, :, :].T, base.grid.axis("y"), base.times,
+        xlabel="y (m)", ylabel="two-way time (s)",
+        title=f"crossline — {scenario} · {stack}"), width="stretch")
+
+
 def page_fourd() -> None:
     pipe = pipeline()
     st.title("4D analysis")
@@ -1091,6 +1201,7 @@ PAGE_FUNCTIONS = {
     "Wells & Completions": page_wells,
     "Flow Simulation": page_flow,
     "Rock Physics": page_rockphysics,
+    "Synthetic Volume": page_sim2seis,
     "Acquisition & QC": page_acquisition,
     "Simulation & Imaging": page_simulation,
     "4D Analysis": page_fourd,

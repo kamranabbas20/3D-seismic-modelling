@@ -63,9 +63,9 @@ def test_extending_the_simulation_keeps_the_geology():
 def test_changing_the_wavelet_keeps_the_flow_and_the_rock_physics():
     before, after = mutate(**{"source.frequency": 25.0})
     stale = stale_stages(before, after)
-    # The sparse synthetic convolves with the same wavelet, so it goes
-    # stale too - it just costs nothing to redo.
-    assert stale == {"gathers", "images", "synthetic", "fourd"}
+    # Both convolutional modes use the same wavelet, so they go stale too -
+    # they just cost seconds to redo rather than hours.
+    assert stale == {"gathers", "images", "synthetic", "sim2seis", "fourd"}
     survived = surviving_stages(before, after)
     assert {"flow", "rockphysics", "states", "geology"} <= survived
 

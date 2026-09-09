@@ -59,6 +59,10 @@ STAGES: tuple[Stage, ...] = (
     # it is cheap and why it depends on the wells that name its traces.
     Stage("synthetic", sections=("synthetic", "source", "solver"),
           depends=("rockphysics", "wells"), cost="cheap"),
+    # The synthetic volume needs no acquisition and no wells: it converts the
+    # earth model itself, column by column.
+    Stage("sim2seis", sections=("sim2seis", "source", "solver"),
+          depends=("rockphysics",), cost="moderate"),
     Stage("fourd", depends=("images", "rockphysics"), cost="cheap"),
 )
 

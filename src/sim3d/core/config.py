@@ -28,10 +28,11 @@ import yaml
 from .errors import ConfigError
 from .grid import DomainSet, Grid3D
 # Safe: nothing under ``processing`` or ``wave`` imports this module back.
+from ..processing.sim2seis import DEFAULT_STACKS, build_stacks
 from ..processing.sparse import LAYOUTS
 
 #: The seismic modes ``imaging.method`` accepts.
-IMAGING_METHODS = ("RTM", "sparse_synthetic")
+IMAGING_METHODS = ("RTM", "sparse_synthetic", "sim2seis")
 
 
 def _build(cls, data: dict[str, Any], path: str = ""):
@@ -292,6 +293,44 @@ class SyntheticConfig:
 
 
 @dataclass
+class Sim2SeisConfig:
+    """Settings for the synthetic seismic volume.
+
+    Its own section, like ``synthetic``, so the dependency graph stays
+    precise: re-stacking at different angles must not invalidate a
+    migration, and an RTM setting must not invalidate the volume.
+    """
+
+    #: Angle stacks, each ``{name, angles: [min, max]}`` in degrees.
+    stacks: list = field(default_factory=lambda: [dict(s) for s in DEFAULT_STACKS])
+    #: Angles averaged within each stack.
+    sub_angles: int = 5
+    #: Time sample interval in seconds; ``None`` derives one from the
+    #: source bandwidth, picking a conventional 4, 2 or 1 ms.
+    sample_interval: float | None = None
+    #: Length of the time axis in seconds; ``None`` uses the deepest
+    #: two-way time in the model.  This is deliberately *not*
+    #: ``solver.record_length``: that is the listening time of a survey
+    #: whose sources sit near the reservoir, while a synthetic column is
+    #: timed from the surface and needs the whole overburden.
+    record_length: float | None = None
+    #: Also resample every cube onto the depth axis.
+    map_to_depth: bool = True
+
+    def __post_init__(self) -> None:
+        build_stacks(self.stacks)        # validate now, not at run time
+        if self.sub_angles < 1:
+            raise ConfigError(
+                f"sub_angles must be at least 1, got {self.sub_angles}")
+        if self.sample_interval is not None and self.sample_interval <= 0:
+            raise ConfigError(
+                f"sample_interval must be positive, got {self.sample_interval}")
+        if self.record_length is not None and self.record_length <= 0:
+            raise ConfigError(
+                f"record_length must be positive, got {self.record_length}")
+
+
+@dataclass
 class FourDConfig:
     scenarios: list = field(
         default_factory=lambda: ["baseline", "pressure_only", "saturation_only", "combined"])
@@ -329,6 +368,7 @@ class ExperimentConfig:
     acquisition: AcquisitionConfig = field(default_factory=AcquisitionConfig)
     imaging: ImagingConfig = field(default_factory=ImagingConfig)
     synthetic: SyntheticConfig = field(default_factory=SyntheticConfig)
+    sim2seis: Sim2SeisConfig = field(default_factory=Sim2SeisConfig)
     fourd: FourDConfig = field(default_factory=FourDConfig)
     budget: BudgetConfig = field(default_factory=BudgetConfig)
     output: OutputConfig = field(default_factory=OutputConfig)
