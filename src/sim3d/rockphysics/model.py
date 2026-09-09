@@ -42,6 +42,13 @@ class RockPhysicsConfig:
     api: float = 30.0
     gas_gravity: float = 0.65
     gor: float = 100.0
+    #: Floor on effective stress, Pa.  At the free surface the confining and
+    #: pore pressures are both atmospheric, so the true effective stress is
+    #: zero and every grain-contact frame model degenerates there.  Cells
+    #: below this floor are raised to it and *counted in the warnings*, so
+    #: the shallow section is never quietly given a stiffness it has not
+    #: earned.  Set to 0 to disable and let such a model raise instead.
+    min_effective_pressure: float = 1.0e6
 
     def describe(self) -> str:
         return "\n".join([
@@ -55,6 +62,8 @@ class RockPhysicsConfig:
             f"salinity = {self.salinity:g} ppm, API = {self.api:g}, "
             f"gas gravity = {self.gas_gravity:g}, GOR = {self.gor:g} L/L",
             f"  {self.pressure.describe()}",
+            f"  min P_eff        {self.min_effective_pressure / 1e6:g} MPa "
+            f"(floor for the shallow section)",
             "  saturation:      Gassmann fluid substitution (low-frequency limit)",
         ])
 
@@ -159,13 +168,30 @@ def elastic_from_state(porosity, composition: dict[str, np.ndarray],
 
     p_eff = effective_stress(confining_pressure, pore_pressure, config.pressure.biot)
     p_eff = np.broadcast_to(np.asarray(p_eff, dtype=float), phi.shape).copy()
-    if np.any(p_eff <= 0):
+    # A *negative* effective stress is always an error: the pore pressure has
+    # passed the confining stress. Exactly zero is what the free surface gives -
+    # both pressures are atmospheric there - so it is handled by the shallow
+    # floor below rather than treated as a failure.
+    if np.any(p_eff < 0):
         raise ValidationError(
-            f"effective stress is non-positive somewhere (minimum "
-            f"{np.min(p_eff) / 1e6:.3f} MPa), so the pore pressure has reached or "
-            f"exceeded the confining stress. That is fracture territory, outside "
-            f"every frame model here."
+            f"effective stress is negative somewhere (minimum "
+            f"{np.min(p_eff) / 1e6:.3f} MPa), so the pore pressure has exceeded the "
+            f"confining stress. That is fracture territory, outside every frame "
+            f"model here."
         )
+    floor = float(config.min_effective_pressure)
+    clamp_notes: list[str] = []
+    below = p_eff < floor
+    if floor > 0 and np.any(below):
+        clamp_notes.append(
+            f"{int(below.sum()):,} of {p_eff.size:,} cells "
+            f"({100 * below.mean():.2f}%) had an effective stress below the "
+            f"{floor / 1e6:g} MPa floor (minimum {np.min(p_eff) / 1e6:.3f} MPa) and "
+            f"were raised to it; this is the shallow section, where confining and "
+            f"pore pressure both approach atmospheric and grain-contact frame "
+            f"models degenerate"
+        )
+        p_eff = np.maximum(p_eff, floor)
 
     frame_p = config.pressure.frame_pressure(p_eff)
     if config.dry_frame_model == "soft_sand":
@@ -187,7 +213,8 @@ def elastic_from_state(porosity, composition: dict[str, np.ndarray],
     k_dry = k_dry * f_k
     mu_dry = mu_dry * f_mu
 
-    warnings = check_validity(pore_pressure, config.temperature, config.salinity)
+    warnings = clamp_notes + check_validity(pore_pressure, config.temperature,
+                                            config.salinity)
     builders = {
         "brine": lambda: brine_properties(pore_pressure, config.temperature, config.salinity),
         "oil": lambda: oil_properties(pore_pressure, config.temperature, config.api,

@@ -368,6 +368,22 @@ def test_pore_pressure_above_the_confining_stress_is_refused():
         elastic_from_state(**_state(pore_pressure=np.array([60e6])))
 
 
+def test_the_shallow_section_is_floored_and_the_floor_is_reported():
+    """At the free surface both pressures are atmospheric, so the true
+    effective stress is zero and every grain-contact model degenerates.
+    The floor is applied and counted, never applied quietly."""
+    result = elastic_from_state(**_state(
+        pore_pressure=np.array([0.2e6]), confining_pressure=np.array([0.4e6])))
+    assert as_scalar(result.effective_pressure) == pytest.approx(
+        result.config.min_effective_pressure)
+    assert any("floor" in w for w in result.warnings)
+
+    with pytest.raises(ValidationError, match="strictly positive"):
+        elastic_from_state(**_state(
+            pore_pressure=np.array([0.4e6]), confining_pressure=np.array([0.4e6]),
+            config=RockPhysicsConfig(temperature=80.0, min_effective_pressure=0.0)))
+
+
 def test_the_chain_works_on_a_whole_3d_volume():
     shape = (4, 5, 6)
     rng = np.random.default_rng(0)
