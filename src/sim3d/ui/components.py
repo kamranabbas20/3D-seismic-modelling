@@ -233,11 +233,17 @@ def trace_figure(y, series: dict[str, np.ndarray], *, ylabel: str,
             x=values, y=y, mode="lines", name=name, showlegend=multiple,
             line=dict(color=colour, width=2),
             hovertemplate=f"{name}<br>%{{y:,.4g}}<br>%{{x:,.4g}}<extra></extra>"))
+        # Anchor the label at the trace's own extremum, not at its end: a
+        # trace tails off to zero, so end labels would all pile onto the
+        # same point and render as one unreadable smear.
         finite = np.isfinite(values)
-        if multiple and np.any(finite):
-            last = int(np.max(np.where(finite)[0]))
-            fig.add_annotation(x=values[last], y=y[last], text=f" {name}",
-                               showarrow=False, xanchor="left", yanchor="top",
+        if multiple and np.any(finite) and np.nanmax(np.abs(values)) > 0:
+            peak = int(np.nanargmax(np.abs(np.where(finite, values, 0.0))))
+            side = "left" if values[peak] >= 0 else "right"
+            pad = " " if side == "left" else ""
+            fig.add_annotation(x=values[peak], y=y[peak],
+                               text=f"{pad}{name}{'' if side == 'left' else ' '}",
+                               showarrow=False, xanchor=side, yanchor="middle",
                                font=dict(color=theme.INK_SECONDARY, size=10))
     if zero_line:
         fig.add_vline(x=0.0, line=dict(color=theme.GRIDLINE, width=1))

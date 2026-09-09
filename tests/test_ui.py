@@ -268,9 +268,9 @@ def test_a_trace_is_drawn_against_a_downward_axis():
     assert figure.data[0].y[0] == pytest.approx(0.0)
 
 
-def test_two_traces_carry_a_legend_and_end_labels():
+def test_two_traces_carry_a_legend_and_direct_labels():
     y = np.linspace(0.0, 1.0, 32)
-    figure = ui.trace_figure(y, {"baseline": np.zeros(32), "combined": np.ones(32)},
+    figure = ui.trace_figure(y, {"baseline": np.sin(y * 9), "combined": np.ones(32)},
                              ylabel="depth (m)")
     assert all(trace.showlegend for trace in figure.data)
     assert len(figure.layout.annotations) == 2
@@ -280,4 +280,26 @@ def test_one_trace_needs_no_legend():
     y = np.linspace(0.0, 1.0, 32)
     figure = ui.trace_figure(y, {"baseline": np.zeros(32)}, ylabel="depth (m)")
     assert not figure.data[0].showlegend
+    assert not figure.layout.annotations
+
+
+def test_trace_labels_sit_at_each_extremum_not_at_the_tail():
+    """A trace tails off to zero, so end labels would collide into a smear."""
+    y = np.linspace(0.0, 1.0, 100)
+    a, b = np.zeros(100), np.zeros(100)
+    a[20], b[70] = 1.0, -1.0
+    figure = ui.trace_figure(y, {"a": a, "b": b}, ylabel="two-way time (s)")
+    at = {n.text.strip(): (n.x, n.y) for n in figure.layout.annotations}
+    assert len(set(at.values())) == 2                # not stacked
+    assert at["a"][0] == 1.0 and at["a"][1] == pytest.approx(y[20])
+    assert at["b"][0] == -1.0 and at["b"][1] == pytest.approx(y[70])
+    # A negative peak is labelled on its own side, so the text runs outward.
+    sides = {n.text.strip(): n.xanchor for n in figure.layout.annotations}
+    assert sides["a"] == "left" and sides["b"] == "right"
+
+
+def test_an_all_zero_trace_is_not_labelled():
+    y = np.linspace(0.0, 1.0, 32)
+    figure = ui.trace_figure(y, {"flat": np.zeros(32), "also": np.zeros(32)},
+                             ylabel="depth (m)")
     assert not figure.layout.annotations
