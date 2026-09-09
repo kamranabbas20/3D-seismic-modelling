@@ -16,12 +16,14 @@ science lives here.
     sim3d migrate    model.yaml    3D RTM of every scenario
     sim3d decompose  model.yaml    the 4D difference and the interaction term
     sim3d run        model.yaml    every stage, end to end
+    sim3d gui                      launch the Streamlit research GUI
 """
 
 from __future__ import annotations
 
 import argparse
 import sys
+from pathlib import Path
 import numpy as np
 
 from .core.config import ExperimentConfig
@@ -141,6 +143,28 @@ def cmd_plan(args) -> int:
     print(estimate.describe(throughput=getattr(pipeline, "_throughput", None)))
     print("\nWithin the configured budget.")
     return 0
+
+
+def cmd_gui(args) -> int:
+    """Launch the Streamlit front end.
+
+    Streamlit owns the process from here; the engine is unchanged and the
+    GUI is only another caller of the same Pipeline the CLI uses.
+    """
+    try:
+        from streamlit.web import cli as stcli
+    except ImportError:
+        print("The GUI needs Streamlit and Plotly:\n"
+              '    pip install -e ".[ui]"', file=sys.stderr)
+        return 1
+    app = Path(__file__).resolve().parent / "ui" / "streamlit_app.py"
+    argv = ["streamlit", "run", str(app)]
+    if args.port:
+        argv += ["--server.port", str(args.port)]
+    if args.headless:
+        argv += ["--server.headless", "true"]
+    sys.argv = argv
+    return int(stcli.main() or 0)
 
 
 def cmd_benchmark(args) -> int:
@@ -290,6 +314,10 @@ def build_parser() -> argparse.ArgumentParser:
         .add_argument("--benchmark", action="store_true",
                       help="measure this machine before quoting a runtime")
     add("benchmark", cmd_benchmark, "measure solver throughput", needs_config=False)
+    gui = add("gui", cmd_gui, "launch the Streamlit research GUI", needs_config=False)
+    gui.add_argument("--port", type=int, default=None, help="port to serve on")
+    gui.add_argument("--headless", action="store_true",
+                     help="do not try to open a browser")
     add("preview", cmd_preview, "fast 1D convolution screening")
     add("simulate", cmd_simulate, "model shot gathers for every earth model") \
         .add_argument("--force", action="store_true", help="proceed despite failed QC")

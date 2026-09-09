@@ -44,7 +44,7 @@ Python 3.10 or newer.
 
 ```bash
 python3 -m venv .venv
-.venv/bin/pip install -e ".[accel,dev]"
+.venv/bin/pip install -e ".[accel,ui,dev]"
 source .venv/bin/activate          # optional: lets you drop the .venv/bin/ prefix
 ```
 
@@ -52,7 +52,7 @@ source .venv/bin/activate          # optional: lets you drop the .venv/bin/ pref
 
 ```powershell
 python -m venv .venv
-.venv\Scripts\pip install -e ".[accel,dev]"
+.venv\Scripts\pip install -e ".[accel,ui,dev]"
 .venv\Scripts\Activate.ps1        # optional: lets you drop the .venv\Scripts\ prefix
 ```
 
@@ -62,7 +62,8 @@ policy, `Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass` lifts
 it for that window only and changes nothing machine-wide.
 
 `accel` pulls in Numba, which makes the finite-difference kernels roughly
-2.5× faster. Everything runs without it. Forward slashes work in the
+2.5× faster; `ui` pulls in Streamlit and Plotly for the GUI. Both are
+optional — the engine and the CLI run without either. Forward slashes work in the
 configuration paths on every platform, so the commands below need no
 translation beyond the prefix.
 
@@ -73,7 +74,7 @@ activate, prefix each one with `.venv/bin/` (Unix) or `.venv\Scripts\`
 (Windows).
 
 ```bash
-pytest -q                                            # 253 tests, ~50 s — the real proof
+pytest -q                                            # 273 tests, ~60 s — the real proof
 sim3d physics                                        # what each mode does and does not model
 sim3d benchmark                                      # measure this machine
 sim3d describe    examples/configs/demo_small.yaml
@@ -86,6 +87,52 @@ sim3d run         examples/configs/demo_small.yaml   # everything, ~13 min on 4 
 `sim3d rockphysics` is the best value for the time: the complete
 four-scenario property decomposition and the interaction term, with no wave
 modelling. Everything above it is free.
+
+## The GUI
+
+```bash
+sim3d gui
+```
+
+Seven pages — Project, Geology, Wells & Reservoir, Rock Physics,
+Acquisition & QC, Simulation & Imaging, 4D Analysis. Every volume is shown
+as three orthogonal sections through **one cursor shared across every page**
+(spec section 123), so the geological model, the property volumes and the
+migrated image — which live on different grids at different spacings — are
+always being inspected at the same place.
+
+![Rock Physics page](docs/gui-rock-physics.png)
+
+Two behaviours matter more than the layout:
+
+- **Expensive work never happens because a slider moved** (section 108).
+  Dragging an injector's front radius updates the reservoir state and the
+  rock physics — seconds — and marks the gathers and images stale. Full-wave
+  modelling and RTM stay behind their own buttons, and the RTM button is
+  disabled until gathers exist.
+- **Changing the science invalidates the science** (section 109). The
+  pipeline is keyed on the configuration's content hash, which covers every
+  scientific input and excludes display settings. Edit a saturation target
+  and the gathers are dropped; change a colour limit and nothing is.
+
+Streamlit is only a frontend: every page calls the same `Pipeline` the CLI
+drives, and a test asserts the UI package imports no solver, rock-physics
+model or imaging routine directly.
+
+![Acquisition & QC page](docs/gui-acquisition.png)
+
+Colour is assigned by the job it does, never by taste. Magnitudes
+(porosity, Vp, impedance) use a single-hue sequential ramp; anything signed
+— a 4D difference, a seismic amplitude, a pressure change — uses a diverging
+ramp with a neutral midpoint and **symmetric limits**, because a signed
+field on a one-sided scale hides its sign. There is no rainbow anywhere: it
+invents boundaries the data does not have and is not colourblind-safe. The
+categorical slots used for line identity were validated against the light
+chart surface (worst adjacent CVD ΔE 9.1, normal-vision ΔE 22.9); two sit
+below 3:1 contrast, so those charts carry a legend *and* direct end-labels
+rather than relying on colour alone. The theme is pinned to light because
+that is the surface the palette was validated against — a dark palette is a
+set of steps chosen for the dark surface, not an inversion of this one.
 
 `demo_small.yaml` is one injector and one producer 600 m apart, sized so the
 whole chain — four independent earth models, full-wave modelling, RTM, and
@@ -207,9 +254,10 @@ src/sim3d/
   processing/    convolution preview mode, light filters
   fourd/         the four scenarios, decomposition, 4D metrics
   validation/    model QC and the physics transparency table
-  experiments/   the pipeline the CLI drives
+  experiments/   the pipeline the CLI and the GUI both drive
+  ui/            the Streamlit front end and its display components
   cli.py
-tests/           253 tests, ~50 seconds
+tests/           273 tests, ~60 seconds
 examples/configs/
 docs/
 ```
@@ -274,7 +322,7 @@ or a literature measurement — never against a stored output of this code.
   estimate with no bound status.
 
 ```bash
-pytest -q                    # 253 tests, ~50 s (includes the section 131 null test)
+pytest -q                    # 273 tests, ~60 s (includes the section 131 null test)
 ```
 
 Unactivated, that is `.venv/bin/pytest -q` on Unix and
@@ -293,8 +341,10 @@ Interfaces are designed for these; the physics is not there yet, and the
   engine that studying it requires, and stores the ground truth
   (ΔP, ΔSw, ΔSg, ΔVp, Δρ, ΔAI and every seismic difference) that a future
   inversion would be trained or tested against.
-- Marine streamer, OBC and land geometries; SEG-Y and RESQML I/O; the
-  Streamlit front end; the GPU backend.
+- Marine streamer, OBC and land geometries; SEG-Y and RESQML I/O; the GPU
+  backend. The GUI has no 3D volume rendering (PyVista/VTK) or synchronised
+  multi-panel 4D viewer yet — volumes are inspected through linked
+  orthogonal sections.
 
 ## References
 

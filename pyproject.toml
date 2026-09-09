@@ -17,6 +17,7 @@ dependencies = [
 [project.optional-dependencies]
 accel = ["numba>=0.58"]
 viz = ["matplotlib>=3.7", "plotly>=5.0"]
+ui = ["streamlit>=1.30", "plotly>=5.0"]
 dev = ["pytest>=7.0"]
 
 [project.scripts]

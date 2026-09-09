@@ -26,7 +26,12 @@ Section numbers refer to the project specification. Three states:
 | 116 | Provenance | partial | `ReservoirState.provenance` and pipeline notes; no full lineage graph |
 | 117 | YAML/JSON configuration | done | Unknown keys are errors |
 | 118 | CLI | done | Twelve commands, no GUI dependency |
-| 119 | GUI as a frontend only | done by construction | No GUI yet; all science is in `Pipeline` |
+| 119 | GUI as a frontend only | done | Streamlit calls `Pipeline`; a test asserts the UI imports no solver or rock-physics model |
+| 121 | Main GUI pages | partial | Seven pages covering the fourteen the spec lists; no dedicated Experiments page |
+| 122 | Visualisation libraries | partial | Plotly sections and maps; no PyVista/VTK 3D rendering |
+| 123 | Interactive slicing with a linked cursor | done | One cursor in metres shared across grids and pages |
+| 124 | 3D reservoir display with opacity | deferred | Needs the volume renderer |
+| 108 | Interactive editing without automatic reruns | done | Sliders update state and rock physics; modelling and RTM stay on buttons |
 
 ## Geology and wells — Phases 1–2
 
