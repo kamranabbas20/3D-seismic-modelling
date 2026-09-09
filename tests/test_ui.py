@@ -335,3 +335,20 @@ def test_a_section_is_symmetric_about_zero():
     figure = ui.section_figure(data, np.arange(4), np.arange(10),
                                xlabel="x (m)", ylabel="t (s)", robust=False)
     assert figure.data[0].zmin == pytest.approx(-figure.data[0].zmax)
+
+
+def test_the_sidebar_reports_every_expensive_stage():
+    """A page that shows a result while the sidebar says 'nothing yet' is
+    telling the user two different things about the same session."""
+    import ast
+    import pathlib
+    source = pathlib.Path("src/sim3d/ui/streamlit_app.py").read_text(encoding="utf-8")
+    reported = {"geology", "flow", "rock physics", "traces", "volume",
+                "gathers", "images"}
+    listed = {node.value for node in ast.walk(ast.parse(source))
+              if isinstance(node, ast.Constant) and isinstance(node.value, str)}
+    assert reported <= listed
+    # Every result field the pipeline can fill should have a label above.
+    from sim3d.experiments.pipeline import ExperimentResult
+    heavy = {"geology", "flow", "earth", "synthetics", "volumes", "gathers", "images"}
+    assert heavy <= {f.name for f in ExperimentResult.__dataclass_fields__.values()}

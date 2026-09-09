@@ -173,7 +173,10 @@ def sidebar() -> str:
     if pipe is not None:
         done = [name for name, ok in (
             ("geology", pipe.result.geology is not None),
+            ("flow", pipe.result.flow is not None),
             ("rock physics", pipe.result.earth is not None),
+            ("traces", bool(pipe.result.synthetics)),
+            ("volume", bool(pipe.result.volumes)),
             ("gathers", bool(pipe.result.gathers)),
             ("images", bool(pipe.result.images))) if ok]
         st.sidebar.caption("computed: " + (", ".join(done) if done else "nothing yet"))

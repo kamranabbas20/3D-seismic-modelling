@@ -47,8 +47,8 @@ seismic volume, column by column, without propagating anything. Four earth
 models in three angle stacks takes seconds. It is the cube a reservoir
 study compares against real seismic, and the angle stacks are the point:
 on `demo_small` the 4D response **falls** with angle for a pressure change
-(6.6 → 5.0 % NRMS) and **rises** for a fluid change (8.6 → 8.9 %), which is
-the AVO discrimination between the two.
+(8.2 → 6.3 % NRMS near to far) and **rises** for a fluid change
+(8.0 → 8.1 %), which is the AVO discrimination between the two.
 
 It is not, and cannot be, what a survey would record. Every trace is built
 independently of its neighbours, so nothing moves sideways: no diffraction,
