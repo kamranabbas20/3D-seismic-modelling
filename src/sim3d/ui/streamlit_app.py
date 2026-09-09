@@ -32,7 +32,7 @@ import streamlit as st
 from sim3d.core.config import ExperimentConfig
 from sim3d.core.errors import Sim3DError
 from sim3d.core.graph import explain as explain_dependencies
-from sim3d.core.units import pa_to_psi, psi_to_pa, si_to_stb_per_day
+from sim3d.core.units import PSI, pa_to_psi, psi_to_pa, si_to_stb_per_day
 from sim3d.io import ScenarioStore, ViewState
 from sim3d.ui import view3d
 from sim3d.wells.completion import layer_intersections, resolve_completions
@@ -282,10 +282,10 @@ def page_reservoir() -> None:
 
     scenario = cfg.reservoir.scenario
     edited = False
-    for label, entries, field, fmt in (
-            ("Pressure", scenario.pressure, "delta_p_bar", "%.0f bar"),
-            ("Water fronts", scenario.water_fronts, "target_sw", "%.2f"),
-            ("Gas", scenario.gas, "target_sg", "%.2f")):
+    for label, entries, field in (
+            ("Pressure", scenario.pressure, "delta_p_bar"),
+            ("Water fronts", scenario.water_fronts, "target_sw"),
+            ("Gas", scenario.gas, "target_sg")):
         if not entries:
             continue
         st.markdown(f"**{label}**")
@@ -293,8 +293,10 @@ def page_reservoir() -> None:
             c1, c2 = st.columns(2)
             key = f"{label}_{i}"
             if field == "delta_p_bar":
-                new = c1.slider(f"{entry['well']} ΔP (bar)", -120.0, 120.0,
-                                float(entry[field]), 1.0, key=key + "_v")
+                shown = c1.slider(f"{entry['well']} ΔP (psi)", -1740.0, 1740.0,
+                                  round(pa_to_psi(float(entry[field]) * 1e5)),
+                                  10.0, key=key + "_v")
+                new = psi_to_pa(shown) / 1e5
             else:
                 new = c1.slider(f"{entry['well']} {field}", 0.0, 1.0,
                                 float(entry[field]), 0.01, key=key + "_v")
@@ -327,10 +329,10 @@ def page_reservoir() -> None:
     monitor = states.combined
     delta = monitor.difference(states.baseline)
     lookup = {
-        "ΔP": (delta["dP"], "diverging", 1e5, "bar"),
+        "ΔP": (delta["dP"], "diverging", PSI, "psi"),
         "ΔSw": (delta["dSw"], "diverging", 1.0, "fraction"),
         "ΔSg": (delta["dSg"], "diverging", 1.0, "fraction"),
-        "pressure": (monitor.pressure, "sequential", 1e5, "bar"),
+        "pressure": (monitor.pressure, "sequential", PSI, "psi"),
         "Sw": (monitor.sw, "sequential", 1.0, "fraction"),
         "Sg": (monitor.sg, "sequential", 1.0, "fraction"),
     }
@@ -342,8 +344,10 @@ def page_reservoir() -> None:
     mask = states.baseline.reservoir_mask
     cell = grid.dx * grid.dy * grid.dz / 1e9
     a, b, c = st.columns(3)
-    a.metric("Pressure-affected volume", f"{np.sum((np.abs(delta['dP']) > 1e5) & mask) * cell:.3f} km³",
-             help="reservoir cells where |ΔP| exceeds 1 bar")
+    threshold = psi_to_pa(10.0)
+    a.metric("Pressure-affected volume",
+             f"{np.sum((np.abs(delta['dP']) > threshold) & mask) * cell:.3f} km³",
+             help="reservoir cells where |ΔP| exceeds 10 psi")
     b.metric("Water-affected volume", f"{np.sum((delta['dSw'] > 0.01) & mask) * cell:.3f} km³")
     c.metric("Gas-affected volume", f"{np.sum((delta['dSg'] > 0.01) & mask) * cell:.3f} km³")
     st.caption("The pressure halo is normally much the largest of the three. "

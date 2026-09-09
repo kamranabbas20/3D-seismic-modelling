@@ -69,3 +69,18 @@ def test_oilfield_units_are_accepted_at_the_configuration_boundary():
 
 def test_bar_conversion_still_exists_for_internal_use():
     assert pa_to_bar(-5.0e6) == pytest.approx(-50.0)
+
+
+def test_qc_reports_pore_pressure_in_psi():
+    """Requirement 8 reaches the QC panel too, which is user-facing text."""
+    import numpy as np
+    from types import SimpleNamespace
+    from sim3d.validation.qc import check_state
+
+    ones = np.ones((2, 2, 2))
+    state = SimpleNamespace(sw=0.3 * ones, so=0.7 * ones, sg=0.0 * ones,
+                            porosity=0.2 * ones, pressure=2.0e7 * ones)
+    line = next(c.message for c in check_state(state).checks
+                if "pore pressure" in c.message)
+    assert "psi" in line and "bar" not in line
+    assert "2,901" in line          # 20 MPa

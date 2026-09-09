@@ -242,3 +242,19 @@ def test_every_advertised_page_has_a_function():
 
     assert set(streamlit_app.PAGES) == set(streamlit_app.PAGE_FUNCTIONS)
     assert all(callable(f) for f in streamlit_app.PAGE_FUNCTIONS.values())
+
+
+def test_every_pressure_field_is_displayed_in_psi():
+    """Requirement 8, at the layer that actually paints the colourbar.
+
+    ``core.units.to_display`` was already pinned to psi, but the figures do
+    not go through it - they read ``theme.DISPLAY`` - so the two tables can
+    disagree, and did: pressure and dP were scaled to bar.
+    """
+    from sim3d.core.units import PSI
+
+    for field in ("pressure", "dP"):
+        scale, unit, _ = theme.DISPLAY[field]
+        assert unit == "psi"
+        assert scale == pytest.approx(PSI)
+    assert not [f for f, (_, unit, _) in theme.DISPLAY.items() if unit == "bar"]

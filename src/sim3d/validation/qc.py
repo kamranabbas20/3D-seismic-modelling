@@ -18,6 +18,7 @@ from enum import Enum
 import numpy as np
 
 from ..core.grid import Grid3D
+from ..core.units import pa_to_psi
 from ..wave.acoustic import AcousticModel
 from ..wave.fdscheme import (
     cells_per_wavelength, max_stable_dt, recommend_spacing, required_ppw,
@@ -81,7 +82,7 @@ def check_state(state, result: QCResult | None = None) -> QCResult:
     p = state.pressure
     result.add(Status.PASS if np.all(p > 0) else Status.FAIL,
                f"pore pressure positive: spans "
-               f"[{p.min() / 1e5:.2f}, {p.max() / 1e5:.2f}] bar")
+               f"[{pa_to_psi(p.min()):,.0f}, {pa_to_psi(p.max()):,.0f}] psi")
     return result
 
 

@@ -30,6 +30,8 @@ without validating it would be worse than not shipping it.
 
 from __future__ import annotations
 
+from ..core.units import PSI
+
 # --- surfaces and ink -----------------------------------------------------
 SURFACE = "#fcfcfb"
 PAGE = "#f9f9f7"
@@ -133,11 +135,11 @@ DISPLAY = {
     "porosity": (1.0, "fraction", "sequential"),
     "vsh": (1.0, "fraction", "sequential"),
     "ntg": (1.0, "fraction", "sequential"),
-    "pressure": (1e5, "bar", "sequential"),
+    "pressure": (PSI, "psi", "sequential"),
     "sw": (1.0, "fraction", "sequential"),
     "so": (1.0, "fraction", "sequential"),
     "sg": (1.0, "fraction", "sequential"),
-    "dP": (1e5, "bar", "diverging"),
+    "dP": (PSI, "psi", "diverging"),
     "dSw": (1.0, "fraction", "diverging"),
     "dSo": (1.0, "fraction", "diverging"),
     "dSg": (1.0, "fraction", "diverging"),
