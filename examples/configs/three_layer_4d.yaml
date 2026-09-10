@@ -16,7 +16,11 @@ project:
 domains:
   geology_bounds: [[0, 2000], [0, 2000], [0, 1800]]
   geology_spacing: [25.0, 25.0, 10.0]
-  propagation_bounds: [[250, 1750], [250, 1750], [700, 1700]]
+  # The top is at 300 m, not 700, so the acquisition can sit well above
+  # the target. With sources only 1.6 wavelengths above the sand the
+  # injection near-field overlaps the reservoir top and no amount of
+  # filtering separates them; at 540 m it is 4.2 wavelengths clear.
+  propagation_bounds: [[250, 1750], [250, 1750], [300, 1700]]
   propagation_spacing: [16.0, 16.0, 16.0]
   target_bounds: [[500, 1500], [500, 1500], [1150, 1400]]
 
@@ -82,8 +86,10 @@ acquisition:
   source_spacing: 250.0
   source_line_spacing: 250.0
   source_extent: 500.0
-  receiver_depth: 960.0
-  source_depth: 940.0
+  # 12 PML nodes at 16 m need 192 m of clearance from the domain top
+  # at 300 m, so 492 m is the shallowest either may sit.
+  receiver_depth: 560.0
+  source_depth: 540.0
 
 imaging:
   method: RTM
