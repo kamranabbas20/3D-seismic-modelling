@@ -63,14 +63,22 @@ def test_the_preview_times_its_event_at_the_interface(two_layer):
 
 
 def test_the_preview_maps_back_onto_the_depth_grid(two_layer):
+    """The reflector lands at its own depth, not a wavelet delay below it.
+
+    This test used to assert the opposite - that the peak sat 65 m deep,
+    ``t0 * V2 / 2`` - and called that the wavelet delay. It is the wavelet
+    delay, but it is not something a depth cube should carry: the whole
+    point of mapping back to depth is to lie beside the property volume and
+    the migrated image, and both of those put the interface at 600 m. The
+    delay belongs in the time cube, where it matches the solver, and is
+    taken back out on the way to depth.
+    """
     dt, f0 = 0.002, 20.0
     preview = convolution_preview(two_layer, ricker(np.arange(200) * dt, f0), dt,
                                   t_max=1.0)
     trace = np.abs(preview.depth_traces[1, 1])
     imaged_depth = two_layer.grid.axis(2)[int(np.argmax(trace))]
-    # The wavelet delay pushes the peak below the interface by
-    # t0 * V2 / 2 = 0.05 * 2600 / 2 = 65 m.
-    assert imaged_depth == pytest.approx(600.0 + 65.0, abs=30.0)
+    assert imaged_depth == pytest.approx(600.0, abs=2 * two_layer.grid.dz)
 
 
 def test_bandpass_removes_out_of_band_energy_without_shifting_phase():
@@ -134,3 +142,55 @@ def test_convolution_mode_declares_what_it_cannot_do():
 
 def test_the_unimplemented_elastic_mode_says_so():
     assert "not implemented" in describe_mode("elastic_fd")
+
+
+def test_the_depth_cube_puts_a_reflector_at_its_own_depth():
+    """The trace keeps the wavelet's delay so its time axis matches the
+    solver's; the depth mapping has to take that delay back out again.
+
+    Reading the trace at ``twt`` rather than ``twt + delay`` landed every
+    reflector about ``delay * V / 2`` too deep - 125 m for a 12 Hz Ricker at
+    2,500 m/s, which puts a reservoir event below the reservoir. The give-away
+    is that the error scaled with the source frequency.
+    """
+    from sim3d.core.grid import Grid3D
+    from sim3d.processing.preview import convolution_preview
+    from sim3d.wave.acoustic import AcousticModel
+    from sim3d.wave.wavelets import ricker
+
+    dt = 0.004
+    grid = Grid3D(origin=(0.0, 0.0, 0.0), spacing=(50.0, 50.0, 10.0),
+                  shape=(3, 3, 181))
+    interface = (120 - 0.5) * grid.dz
+    for f0 in (8.0, 12.0, 25.0):
+        vp = np.full(grid.shape, 2500.0)
+        vp[:, :, 120:] = 3000.0
+        model = AcousticModel(grid=grid, vp=vp,
+                              rho=np.full(grid.shape, 2300.0))
+        wavelet = ricker(np.arange(int(2.0 / dt)) * dt, f0)
+        cube = convolution_preview(model, wavelet, dt, t_max=2.0)
+        peak = grid.axis(2)[np.argmax(np.abs(cube.depth_traces[1, 1]))]
+        assert abs(peak - interface) <= grid.dz, f"{f0} Hz landed at {peak} m"
+
+
+def test_the_depth_registration_does_not_drift_with_frequency():
+    """A residual that grows with frequency means the delay is still in there."""
+    from sim3d.core.grid import Grid3D
+    from sim3d.processing.preview import convolution_preview
+    from sim3d.wave.acoustic import AcousticModel
+    from sim3d.wave.wavelets import ricker
+
+    dt = 0.004
+    grid = Grid3D(origin=(0.0, 0.0, 0.0), spacing=(50.0, 50.0, 10.0),
+                  shape=(3, 3, 181))
+    offsets = []
+    for f0 in (8.0, 25.0):
+        vp = np.full(grid.shape, 2500.0)
+        vp[:, :, 120:] = 3000.0
+        model = AcousticModel(grid=grid, vp=vp,
+                              rho=np.full(grid.shape, 2300.0))
+        wavelet = ricker(np.arange(int(2.0 / dt)) * dt, f0)
+        cube = convolution_preview(model, wavelet, dt, t_max=2.0)
+        peak = grid.axis(2)[np.argmax(np.abs(cube.depth_traces[1, 1]))]
+        offsets.append(peak - (120 - 0.5) * grid.dz)
+    assert abs(offsets[0] - offsets[1]) <= grid.dz

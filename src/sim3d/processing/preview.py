@@ -117,7 +117,15 @@ def convolve_reflectivity(twt: np.ndarray, rc: np.ndarray, wavelet: np.ndarray,
 
     depth_traces = None
     if map_to_depth:
-        twt_flat = twt.reshape(n_col, -1)
+        # Sample the trace at ``twt + delay``, not at ``twt``.  The trace
+        # deliberately keeps the wavelet's own delay so its time axis matches
+        # the finite-difference solver's, which means the event from an
+        # interface peaks a delay *after* that interface's two-way time.
+        # Reading the trace at ``twt`` therefore lands every reflector too
+        # deep by roughly ``delay * V / 2`` - 125 m for a 12 Hz Ricker at
+        # 2,500 m/s, which puts a reservoir event below the reservoir.
+        delay = float(np.argmax(np.abs(w)) * dt) if w.size else 0.0
+        twt_flat = twt.reshape(n_col, -1) + delay
         depth_traces = np.stack(
             [np.interp(twt_flat[i], times, traces[i]) for i in range(n_col)]
         ).reshape(lead + (twt.shape[-1],))
