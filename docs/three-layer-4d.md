@@ -83,6 +83,36 @@ is fold and illumination, not a coding error — and it is exactly the kind of
 mispositioning a convolutional synthetic cannot warn you about, because it has
 no operator to mis-position anything.
 
+## The RTM image: what was wrong with it
+
+The first version of this comparison produced a migrated image that was
+unreadable, and the diagnosis took four steps, two of them in code and two
+in the survey geometry.
+
+| defect | evidence | fix |
+|---|---|---|
+| polarity inverted | correlation −0.707 against a band-limited reference | apply −∇², not ∇²: a Laplacian turns a peak into a trough |
+| injection near-field 57× the reservoir | acquisition band max 11.4 against 0.2 | taper the image one wavelength around every source and receiver |
+| correlating before the target can reflect | artefact ratio 2.9 → 1.5 | skip the imaging condition before the earliest possible target arrival, 152 ms here |
+| sources only 1.6 wavelengths above the target | near-field overlapped the reservoir top and no filter separated them | standoff 260 m → 660 m |
+| that move cut the aperture to 21 degrees | image became migration arcs rather than reflectors | spread 500 m → 1000 m, restoring 37 degrees |
+
+Whole-volume 4D NRMS across those steps: 1.6, 5.6, 14.1, 28.1, 16.9 %.
+The measurement to trust is the reservoir window, which went 26.2 → 39.5 %.
+
+Two things worth recording because they cost time. The obvious suspect —
+the direct arrival — was not the cause: muting it moved the acquisition
+band's share of image energy from 95.9 % to 93.0 % while discarding 67 % of
+the data. And moving the acquisition up was only half a fix, because
+standoff and aperture trade against each other for a fixed spread; the run
+in between was worse than the one before it.
+
+What is still limited: correlation with the independent synthetic is +0.512
+inside the illuminated footprint, and the acquisition band still carries
+3.7× the reservoir RMS. That is 16-shot fold with a hard aperture edge, and
+the reflectors stop where the spread stops illuminating. Neither
+contaminates the reservoir window; neither is production quality.
+
 ## Reading this honestly
 
 sim2seis answers *what change did the rock physics put into the earth model*.
