@@ -87,10 +87,15 @@ acquisition:
   # aperture images arcs rather than reflectors. The spread widens to match.
   # PML clearance puts the outermost source at 1558 m, so 1000 m is the
   # practical maximum about a centre at 1000 m.
-  # 32 m, not 125: the migration operator needs V/(4 fmax sin(theta)) = 35 m
-  # at this aperture, and receiver count does not change the propagation
-  # count - one back-propagation per shot however many nodes inject into it.
-  receiver_spacing: 32.0
+  # 125 m, and measured. The operator limit V/(4 fmax sin(theta)) is 35 m at
+  # this aperture, so this is 3.6x too coarse on paper - but refining it to
+  # 32 m (1,024 nodes) was tried and moved nothing in the reservoir:
+  # correlation with the synthetic 0.512 -> 0.466, window NRMS 39.53 ->
+  # 39.59 %, for 1.75x the run time. It halved the acquisition-band artefact
+  # (3.68 -> 1.64) which sits above the target and is tapered anyway.
+  # The reservoir image is limited by the 16 shots, not by receiver
+  # sampling. See docs/three-layer-4d.md.
+  receiver_spacing: 125.0
   receiver_extent: 1000.0
   source_spacing: 333.0
   source_line_spacing: 333.0

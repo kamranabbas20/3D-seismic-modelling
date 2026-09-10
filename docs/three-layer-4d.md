@@ -113,6 +113,37 @@ inside the illuminated footprint, and the acquisition band still carries
 the reflectors stop where the spread stops illuminating. Neither
 contaminates the reservoir window; neither is production quality.
 
+## Refining the receivers: a negative result
+
+The acquisition is spatially aliased for migration. At 37 degrees of
+aperture, 28.8 Hz and 2,400 m/s the operator needs 35 m sampling; the
+receivers were at 125 m (3.6x coarse) and the sources at 333 m (9.6x). The
+receiver axis looked like the cheap fix, so it was tried first.
+
+It did not work.
+
+| receivers | corr vs synthetic | acquisition/reservoir RMS | window NRMS | run |
+|---|---|---|---|---|
+| 125 m, 81 nodes | +0.512 | 3.68 | 39.53 % | 1,070 s |
+| 32 m, 1,024 nodes | +0.466 | 1.64 | 39.59 % | 1,872 s |
+
+The reservoir image did not improve - the correlation with the independent
+synthetic went slightly *down*, and the 4D NRMS moved by 0.06 points. What
+it did do is halve the acquisition-band artefact, which sits above the
+target and is tapered out anyway.
+
+Two things this corrects. Receiver count is not free: it does not change
+the propagation count, but recording and re-injecting 1,024 points per time
+step cost 1.75x the wall clock, and the claim that it "costs memory and
+nothing else" was wrong. And the aliasing arithmetic, while correct, does
+not identify the binding constraint: the steepest arrivals it applies to
+carry little energy, while the arcs in the image come from having only 16
+shot isochrones to stack. Sampling the receiver axis better fixed something
+that was not what was broken.
+
+The remaining lever is shot count, and it is the expensive one: one forward
+and one backward propagation each. 100 m spacing would be 121 shots, 7.6x.
+
 ## Reading this honestly
 
 sim2seis answers *what change did the rock physics put into the earth model*.
