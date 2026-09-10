@@ -593,6 +593,7 @@ class Pipeline:
         rtm = RTMSettings(
             imaging_condition=cfg.imaging_condition, time_decimation=cfg.time_decimation,
             epsilon=cfg.epsilon, laplacian_filter=cfg.laplacian_filter,
+            taper_wavelengths=cfg.taper_wavelengths, taper_radius=cfg.taper_radius,
             workdir=Path(self.config.output.directory) / self.config.short_hash,
         )
         settings = self.solver_settings(dt)

@@ -62,6 +62,11 @@ class RTMSettings:
     epsilon: float = 1.0e-4
     #: Apply a Laplacian to the stacked image to suppress low-wavenumber artefacts.
     laplacian_filter: bool = True
+    #: Taper the image to zero within this many wavelengths of an acquisition
+    #: point.  ``0`` disables it and leaves the injection near-field in.
+    taper_wavelengths: float = 1.0
+    #: Explicit taper radius in metres; overrides ``taper_wavelengths``.
+    taper_radius: float | None = None
     #: Snapshots above this many bytes spill to a memory-mapped file.
     max_ram_bytes: int = 2 * 2**30
     #: Directory for memory-mapped wavefields and per-shot checkpoints.
@@ -75,6 +80,20 @@ class RTMSettings:
             )
         if self.workdir is not None:
             self.workdir = Path(self.workdir)
+        if self.taper_wavelengths < 0:
+            raise ConfigError(
+                f"taper_wavelengths must not be negative, got {self.taper_wavelengths}")
+        if self.taper_radius is not None and self.taper_radius < 0:
+            raise ConfigError(
+                f"taper_radius must not be negative, got {self.taper_radius}")
+
+    def acquisition_taper_radius(self, wavelength: float | None) -> float:
+        """The taper radius in metres, from either knob."""
+        if self.taper_radius is not None:
+            return float(self.taper_radius)
+        if wavelength is None:
+            return 0.0
+        return float(self.taper_wavelengths) * float(wavelength)
 
 
 @dataclass
@@ -110,7 +129,14 @@ class RTMResult:
 
 
 def laplacian(image: np.ndarray, spacing) -> np.ndarray:
-    """Second-order 3D Laplacian, used as an RTM artefact filter."""
+    """Second-order 3D Laplacian.
+
+    Returns the mathematical Laplacian.  The artefact filter applies its
+    **negative** - see :func:`filtered_image` - because a Laplacian inverts
+    the polarity of a band-limited reflector: the second derivative of a
+    peak is a trough.  Filtering with the bare operator produces an image
+    in which every hard event reads soft.
+    """
     d = np.asarray(spacing, dtype=float)
     out = np.zeros_like(image)
     for axis in range(3):
@@ -118,6 +144,57 @@ def laplacian(image: np.ndarray, spacing) -> np.ndarray:
         o = np.moveaxis(out, axis, 0)
         o[1:-1] += (f[2:] - 2.0 * f[1:-1] + f[:-2]) / d[axis] ** 2
     return out
+
+
+def acquisition_taper(grid: Grid3D, points, radius: float) -> np.ndarray:
+    """Cosine taper to zero within ``radius`` of any acquisition point.
+
+    Sources and receivers are injection points, and the wavefield around one
+    is a near-field singularity that no imaging condition removes: on the
+    three-layer model the acquisition interval carries amplitudes 57 times
+    the reservoir's, so a shared colour scale shows the geometry and nothing
+    else.  This is a display and interpretation aid applied to the image,
+    not a correction to the physics, and it is recorded as such - it removes
+    a region where the image was never meaningful rather than improving one
+    where it was.
+    """
+    if radius <= 0:
+        return np.ones(grid.shape)
+    nodes = np.asarray(points, dtype=float).reshape(-1, 3)
+    x, y, z = (grid.axis(i) for i in range(3))
+    near = np.full(grid.shape, np.inf)
+    for px, py, pz in nodes:
+        d2 = ((x[:, None, None] - px) ** 2
+              + (y[None, :, None] - py) ** 2
+              + (z[None, None, :] - pz) ** 2)
+        np.minimum(near, d2, out=near)
+    ratio = np.clip(np.sqrt(near) / radius, 0.0, 1.0)
+    return 0.5 * (1.0 - np.cos(np.pi * ratio))
+
+
+def filtered_image(image: np.ndarray, grid: Grid3D, rtm: "RTMSettings",
+                   points=None, wavelength: float | None = None):
+    """Apply the imaging filters to a stacked correlation.
+
+    Returns ``(image, notes)``.  Separated from :func:`migrate_survey` so the
+    same choices can be re-applied to a stored correlation without
+    re-propagating a wavefield.
+    """
+    notes: list[str] = []
+    out = image
+    if rtm.laplacian_filter:
+        # Negated: see :func:`laplacian`.
+        out = -laplacian(out, grid.spacing)
+        notes.append("Laplacian filter applied (negated, so the image keeps "
+                     "reflectivity polarity) to suppress low-wavenumber artefacts")
+    radius = rtm.acquisition_taper_radius(wavelength)
+    if radius > 0 and points is not None:
+        out = out * acquisition_taper(grid, points, radius)
+        notes.append(
+            f"image tapered to zero within {radius:,.0f} m of the sources and "
+            f"receivers, where the injection near-field dominates and the "
+            f"image never carried geology")
+    return out, notes
 
 
 def migrate_shot(record: ShotRecord, migration_model: AcousticModel,
@@ -243,9 +320,15 @@ def migrate_survey(records: Sequence[ShotRecord], migration_model: AcousticModel
             f"source-illumination normalised with epsilon = {rtm.epsilon:g} "
             f"of peak illumination"
         )
-    if rtm.laplacian_filter:
-        image = laplacian(image, grid.spacing)
-        notes.append("Laplacian filter applied to suppress low-wavenumber artefacts")
+
+    points = np.concatenate(
+        [np.asarray(source_positions, dtype=float).reshape(-1, 3)]
+        + [np.asarray(r.receiver_positions, dtype=float).reshape(-1, 3)
+           for r in records])
+    wavelength = float(migration_model.vp.min()) / float(f0) if f0 else None
+    image, filter_notes = filtered_image(image, grid, rtm, points=points,
+                                         wavelength=wavelength)
+    notes += filter_notes
 
     return RTMResult(
         image=image, grid=grid, illumination=illum, n_shots=len(records),

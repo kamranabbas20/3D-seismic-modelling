@@ -215,3 +215,72 @@ def test_a_shot_recorded_at_a_different_dt_is_refused():
     with pytest.raises(ConfigError, match="must share a time step"):
         migrate_survey([record], background, ricker(np.arange(20) * settings.dt, F0),
                        sources[:1], solver_settings=settings, fmax=3.0 * F0, f0=F0)
+
+
+# ------------------------------------------------- image polarity and taper
+def test_the_artefact_filter_keeps_reflectivity_polarity():
+    """A Laplacian inverts a band-limited peak: its second derivative is a
+    trough. Filtering with the bare operator gives an image in which every
+    hard event reads soft, which on the three-layer model showed up as a
+    correlation of -0.71 against the band-limited reference.
+    """
+    from sim3d.imaging.rtm import RTMSettings, filtered_image
+
+    grid = Grid3D(origin=(0.0, 0.0, 0.0), spacing=(10.0, 10.0, 10.0),
+                  shape=(9, 9, 41))
+    z = np.arange(41) * 10.0
+    lobe = np.exp(-((z - 200.0) / 40.0) ** 2)          # a positive reflector
+    image = np.zeros(grid.shape) + lobe
+    out, notes = filtered_image(image, grid, RTMSettings(taper_wavelengths=0.0))
+    assert out[4, 4, 20] > 0.0
+    assert any("polarity" in n for n in notes)
+
+
+def test_the_taper_is_zero_at_an_acquisition_point_and_one_beyond_it():
+    from sim3d.imaging.rtm import acquisition_taper
+
+    grid = Grid3D(origin=(0.0, 0.0, 0.0), spacing=(10.0, 10.0, 10.0),
+                  shape=(21, 21, 21))
+    taper = acquisition_taper(grid, [(100.0, 100.0, 100.0)], radius=50.0)
+    assert taper[10, 10, 10] == pytest.approx(0.0)
+    assert taper[0, 0, 0] == pytest.approx(1.0)
+    assert np.all((taper >= 0.0) & (taper <= 1.0))
+    # monotonic away from the point along a row
+    row = taper[10:, 10, 10]
+    assert np.all(np.diff(row[:6]) >= -1e-12)
+
+
+def test_a_zero_radius_taper_leaves_the_image_alone():
+    from sim3d.imaging.rtm import acquisition_taper
+
+    grid = Grid3D(origin=(0.0, 0.0, 0.0), spacing=(10.0, 10.0, 10.0),
+                  shape=(5, 5, 5))
+    assert np.all(acquisition_taper(grid, [(20.0, 20.0, 20.0)], 0.0) == 1.0)
+
+
+def test_the_taper_radius_comes_from_wavelengths_or_an_override():
+    from sim3d.imaging.rtm import RTMSettings
+
+    assert RTMSettings(taper_wavelengths=1.5).acquisition_taper_radius(100.0) == 150.0
+    assert RTMSettings(taper_radius=42.0).acquisition_taper_radius(100.0) == 42.0
+    assert RTMSettings(taper_wavelengths=0.0).acquisition_taper_radius(100.0) == 0.0
+    with pytest.raises(ConfigError, match="taper_wavelengths"):
+        RTMSettings(taper_wavelengths=-1.0)
+
+
+def test_the_taper_suppresses_the_acquisition_zone_without_touching_the_target():
+    """The point of the taper: it must remove the injection near-field and
+    leave a deeper reflector untouched."""
+    from sim3d.imaging.rtm import RTMSettings, filtered_image
+
+    grid = Grid3D(origin=(0.0, 0.0, 0.0), spacing=(20.0, 20.0, 20.0),
+                  shape=(11, 11, 41))
+    image = np.zeros(grid.shape)
+    image[5, 5, 5] = 50.0            # near-field spike at the source, z = 100 m
+    image[:, :, 30] = 1.0            # a reflector at z = 600 m
+    out, notes = filtered_image(
+        image, grid, RTMSettings(laplacian_filter=False, taper_radius=100.0),
+        points=[(100.0, 100.0, 100.0)], wavelength=None)
+    assert out[5, 5, 5] == pytest.approx(0.0)
+    assert out[5, 5, 30] == pytest.approx(1.0)
+    assert any("tapered" in n for n in notes)

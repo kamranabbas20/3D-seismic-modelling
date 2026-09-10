@@ -262,6 +262,13 @@ class ImagingConfig:
     velocity_scale: float = 1.0
     #: Gaussian smoothing of the migration velocity, in metres.
     velocity_smoothing: float = 0.0
+    #: Taper the image to zero within this many wavelengths of a source or
+    #: receiver, where the injection near-field dominates.  ``0`` leaves it
+    #: in.  1.5 suppresses more but reaches within a quarter wavelength of a
+    #: target only 1.5 wavelengths below the acquisition.
+    taper_wavelengths: float = 1.0
+    #: Explicit taper radius in metres; overrides ``taper_wavelengths``.
+    taper_radius: float | None = None
 
     def __post_init__(self) -> None:
         if self.method.upper() not in {m.upper() for m in IMAGING_METHODS}:
