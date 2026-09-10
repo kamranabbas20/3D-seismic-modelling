@@ -48,8 +48,14 @@ reservoir:
 simulation:
   duration_days: 3650.0
   report_every_days: 91.25
-  # monitor_day is filled in by the sweep study - see the run report.
-  monitor_day: null
+  # Derived, not picked. The flood must outgrow the first Fresnel zone at
+  # the reservoir (350 m at 12 Hz and 1200 m) or seismic sees a blur rather
+  # than an anomaly with shape; the flood radius reaches it at day 548 and
+  # clears it with margin (1.09x) at day 730. Amplitude is never the
+  # binding constraint here - the 4D NRMS is already 11% at one year - and
+  # the flood reaches the model boundary around day 2650, so later monitors
+  # are contaminated. Two years is also the conventional field repeat.
+  monitor_day: 730.0
   sweep_years: 10.0
 
 rock_physics:
