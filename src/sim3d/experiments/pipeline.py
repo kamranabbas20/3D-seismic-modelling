@@ -577,6 +577,25 @@ class Pipeline:
                 f"smoothed by {cfg.velocity_smoothing:g} m - a deliberate experiment")
         return AcousticModel(true_model.grid, vp, true_model.rho, name="migration")
 
+    def correlation_start_time(self, model, acq) -> float:
+        """Two-way time before which the imaging condition cannot image.
+
+        A reflection from the top of the target cannot reach a receiver
+        sooner than the straight-down-and-back time at the fastest velocity
+        in the model.  Correlating earlier than that can only accumulate the
+        injection near-field around the sources and receivers, which on the
+        three-layer model is what made the acquisition interval brighter
+        than the reservoir.  Configuring ``0`` restores correlation from
+        ``t = 0``; an explicit value overrides this estimate.
+        """
+        configured = self.config.imaging.correlation_start_time
+        if configured is not None:
+            return float(configured)
+        top = float(self.domains.target.bounds[2][0])
+        source_depth = float(np.min(np.asarray(acq.sources, dtype=float)[:, 2]))
+        vmax = float(np.max(model.vp))
+        return max(0.0, 2.0 * (top - source_depth) / vmax)
+
     def migrate(self, progress=None) -> dict[str, RTMResult]:
         """Migrate every scenario with the same operator."""
         if self.result.images:
@@ -594,6 +613,7 @@ class Pipeline:
             imaging_condition=cfg.imaging_condition, time_decimation=cfg.time_decimation,
             epsilon=cfg.epsilon, laplacian_filter=cfg.laplacian_filter,
             taper_wavelengths=cfg.taper_wavelengths, taper_radius=cfg.taper_radius,
+            correlation_start_time=self.correlation_start_time(models["baseline"], acq),
             workdir=Path(self.config.output.directory) / self.config.short_hash,
         )
         settings = self.solver_settings(dt)

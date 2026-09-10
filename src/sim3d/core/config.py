@@ -269,6 +269,11 @@ class ImagingConfig:
     taper_wavelengths: float = 1.0
     #: Explicit taper radius in metres; overrides ``taper_wavelengths``.
     taper_radius: float | None = None
+    #: Two-way time before which the imaging condition is skipped, seconds.
+    #: ``None`` derives it from the geometry - nothing reflected from the top
+    #: of the target can arrive sooner, so anything correlated earlier is
+    #: injection near-field.  ``0`` correlates from t = 0 and leaves it in.
+    correlation_start_time: float | None = None
 
     def __post_init__(self) -> None:
         if self.method.upper() not in {m.upper() for m in IMAGING_METHODS}:

@@ -67,6 +67,11 @@ class RTMSettings:
     taper_wavelengths: float = 1.0
     #: Explicit taper radius in metres; overrides ``taper_wavelengths``.
     taper_radius: float | None = None
+    #: Skip the imaging condition before this two-way time, in seconds.
+    #: Nothing reflected from below the acquisition can arrive earlier, so
+    #: everything correlated before it is injection near-field.  ``None``
+    #: correlates from t = 0 and leaves that energy in the image.
+    correlation_start_time: float | None = None
     #: Snapshots above this many bytes spill to a memory-mapped file.
     max_ram_bytes: int = 2 * 2**30
     #: Directory for memory-mapped wavefields and per-shot checkpoints.
@@ -86,6 +91,11 @@ class RTMSettings:
         if self.taper_radius is not None and self.taper_radius < 0:
             raise ConfigError(
                 f"taper_radius must not be negative, got {self.taper_radius}")
+        if (self.correlation_start_time is not None
+                and self.correlation_start_time < 0):
+            raise ConfigError(
+                f"correlation_start_time must not be negative, got "
+                f"{self.correlation_start_time}")
 
     def acquisition_taper_radius(self, wavelength: float | None) -> float:
         """The taper radius in metres, from either knob."""
@@ -262,8 +272,14 @@ def migrate_shot(record: ShotRecord, migration_model: AcousticModel,
         illum = np.zeros(grid.shape, dtype=np.float64) if illum_out is None else illum_out
         back = MultiPointSource(grid, record.receiver_positions, record.traces[:, ::-1])
 
+        first_step = 0
+        if rtm.correlation_start_time is not None:
+            first_step = int(np.floor(rtm.correlation_start_time / solver.dt))
+
         def correlate(istep: int, p: np.ndarray) -> None:
             forward_step = nt - 1 - istep
+            if forward_step < first_step:
+                return
             slot = slot_of_step.get(forward_step)
             if slot is not None:
                 s = store[slot]

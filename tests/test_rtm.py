@@ -284,3 +284,37 @@ def test_the_taper_suppresses_the_acquisition_zone_without_touching_the_target()
     assert out[5, 5, 5] == pytest.approx(0.0)
     assert out[5, 5, 30] == pytest.approx(1.0)
     assert any("tapered" in n for n in notes)
+
+
+def test_the_correlation_window_starts_when_the_target_can_first_reflect():
+    """Correlating before that can only accumulate injection near-field."""
+    from sim3d.core.config import ExperimentConfig
+    from sim3d.experiments.pipeline import Pipeline
+
+    cfg = ExperimentConfig()
+    cfg.domains.geology_bounds = [[0, 1200], [0, 1200], [0, 1400]]
+    cfg.domains.geology_spacing = [50.0, 50.0, 25.0]
+    cfg.domains.propagation_bounds = [[100, 1100], [100, 1100], [400, 1400]]
+    cfg.domains.propagation_spacing = [50.0, 50.0, 50.0]
+    cfg.domains.target_bounds = [[400, 800], [400, 800], [900, 1100]]
+    pipe = Pipeline(cfg)
+
+    class FakeAcq:
+        sources = np.array([[500.0, 500.0, 700.0]])
+
+    class FakeModel:
+        vp = np.full((2, 2, 2), 2000.0)
+
+    # (900 - 700) * 2 / 2000 = 0.2 s
+    assert pipe.correlation_start_time(FakeModel(), FakeAcq()) == pytest.approx(0.2)
+
+    cfg.imaging.correlation_start_time = 0.0
+    assert Pipeline(cfg).correlation_start_time(FakeModel(), FakeAcq()) == 0.0
+    cfg.imaging.correlation_start_time = 0.42
+    assert Pipeline(cfg).correlation_start_time(FakeModel(), FakeAcq()) == pytest.approx(0.42)
+
+
+def test_a_negative_correlation_start_is_rejected():
+    from sim3d.imaging.rtm import RTMSettings
+    with pytest.raises(ConfigError, match="correlation_start_time"):
+        RTMSettings(correlation_start_time=-0.1)
