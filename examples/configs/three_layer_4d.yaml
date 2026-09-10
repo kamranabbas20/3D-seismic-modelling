@@ -87,7 +87,10 @@ acquisition:
   # aperture images arcs rather than reflectors. The spread widens to match.
   # PML clearance puts the outermost source at 1558 m, so 1000 m is the
   # practical maximum about a centre at 1000 m.
-  receiver_spacing: 125.0
+  # 32 m, not 125: the migration operator needs V/(4 fmax sin(theta)) = 35 m
+  # at this aperture, and receiver count does not change the propagation
+  # count - one back-propagation per shot however many nodes inject into it.
+  receiver_spacing: 32.0
   receiver_extent: 1000.0
   source_spacing: 333.0
   source_line_spacing: 333.0
