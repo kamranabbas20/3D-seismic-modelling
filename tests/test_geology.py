@@ -243,3 +243,34 @@ def test_facies_catalogue_is_self_consistent():
     for name, facies in FACIES.items():
         assert abs(sum(facies.composition.values()) - 1.0) < 1e-9
         assert facies.porosity[0] <= facies.porosity[1]
+
+
+def test_the_three_layer_template_has_exactly_three_layers():
+    """Shale, sand, shale - the only reflectors are the sand's top and base.
+
+    Every other template carries a layered overburden so a migrated image
+    has something to focus on above the reservoir. This one deliberately
+    does not, which is what makes it the right model for comparing two
+    seismic modes on the same change.
+    """
+    layers, faults = TEMPLATES["three_layer"]()
+    assert [layer.name for layer in layers] == [
+        "overburden_shale", "reservoir", "underburden_shale"]
+    assert [layer.facies for layer in layers] == [
+        "shale", "clean_sandstone", "shale"]
+    assert len(faults.faults) == 0
+
+
+def test_the_three_layer_sand_sits_between_its_shales():
+    layers, _ = TEMPLATES["three_layer"](z_reservoir=1200.0, gross=150.0)
+    tops = [float(layer.top.depth(0.0, 0.0)) for layer in layers]
+    assert tops == pytest.approx([0.0, 1200.0, 1350.0])
+
+
+def test_the_three_layer_template_can_drop_its_heterogeneity():
+    """A uniform sand makes the 4D anomaly the only lateral variation."""
+    layers, _ = TEMPLATES["three_layer"](heterogeneous=False)
+    sand = layers[1]
+    assert sand.porosity_heterogeneity is None
+    assert sand.vsh_heterogeneity is None
+    assert sand.n_sublayers == 1

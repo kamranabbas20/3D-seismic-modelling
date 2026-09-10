@@ -167,6 +167,32 @@ def stacked_sands(extent=(3000.0, 3000.0, 2200.0), z_reservoir=1200.0,
     return layers, FaultSet([])
 
 
+def three_layer(extent=(3000.0, 3000.0, 2200.0), z_reservoir=1200.0,
+                gross=150.0, seed=1, heterogeneous=True):
+    """Template H: shale, sand, shale, and nothing else.
+
+    The textbook 4D case.  Every other template carries a layered
+    overburden so that a migrated image has something to focus on above the
+    reservoir; this one carries exactly three units, so the only reflectors
+    in the model are the top and base of the sand and the 4D signal has
+    nowhere to hide.  That makes it the right model for comparing what two
+    seismic modes do with the *same* change, and the wrong one for judging
+    how either behaves under a realistic overburden.
+    """
+    sand = _reservoir(Flat(z_reservoir), gross, seed)
+    if not heterogeneous:
+        sand.porosity_heterogeneity = None
+        sand.vsh_heterogeneity = None
+        sand.n_sublayers = 1
+        sand.sublayer_porosity_range = 0.0
+    return [
+        Layer("overburden_shale", Flat(0.0), "shale", porosity=0.16, vsh=0.88),
+        sand,
+        Layer("underburden_shale", Flat(z_reservoir + gross), "shale",
+              porosity=0.13, vsh=0.90),
+    ], FaultSet([])
+
+
 #: Template name -> builder.
 TEMPLATES: dict[str, Callable] = {
     "flat": flat_reservoir,
@@ -176,6 +202,7 @@ TEMPLATES: dict[str, Callable] = {
     "channel": channel_reservoir,
     "lens": lens_reservoir,
     "stacked_sands": stacked_sands,
+    "three_layer": three_layer,
 }
 
 

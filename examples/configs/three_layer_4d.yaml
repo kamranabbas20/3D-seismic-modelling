@@ -1,0 +1,111 @@
+# Flat three-layer 4D experiment: shale, sand, shale.
+#
+# One injector and one producer 800 m apart in a tabular sand at 1200 m.
+# The only reflectors in the model are the top and base of the sand, so the
+# 4D signal has nowhere to hide and the two seismic modes can be compared
+# on exactly the same change.
+#
+# The monitor time is not guessed - see docs/three-layer-4d.md for how it
+# is derived from the swept pore volume and the seismic resolution.
+
+project:
+  name: three_layer_4d
+  description: Shale-sand-shale, one injector and one producer, baseline vs monitor
+  seed: 1
+
+domains:
+  geology_bounds: [[0, 2000], [0, 2000], [0, 1800]]
+  geology_spacing: [25.0, 25.0, 10.0]
+  propagation_bounds: [[250, 1750], [250, 1750], [700, 1700]]
+  propagation_spacing: [16.0, 16.0, 16.0]
+  target_bounds: [[500, 1500], [500, 1500], [1150, 1400]]
+
+geology:
+  template: three_layer
+  parameters:
+    extent: [2000.0, 2000.0, 1800.0]
+    z_reservoir: 1200.0
+    gross: 150.0
+    seed: 1
+
+wells:
+  pattern: line_drive
+  parameters:
+    centre: [1000.0, 1000.0]
+    n_injectors: 1
+    n_producers: 1
+    separation: 800.0
+    perforation: [1200.0, 1350.0]
+
+reservoir:
+  source: flow
+  baseline:
+    sw: 0.25
+    sg: 0.0
+    temperature: 80.0
+    pressure_gradient: 10500.0
+
+simulation:
+  duration_days: 3650.0
+  report_every_days: 91.25
+  # monitor_day is filled in by the sweep study - see the run report.
+  monitor_day: null
+  sweep_years: 10.0
+
+rock_physics:
+  temperature: 80.0
+  overburden_density: 2300.0
+
+solver:
+  spatial_order: 8
+  courant_safety: 0.9
+  record_length: 1.2
+  pml_nodes: 12
+  backend: auto
+  dtype: float32
+
+source:
+  type: ricker
+  frequency: 12.0
+
+acquisition:
+  type: OBN
+  centre: [1000.0, 1000.0]
+  receiver_spacing: 100.0
+  receiver_extent: 500.0
+  source_spacing: 250.0
+  source_line_spacing: 250.0
+  source_extent: 500.0
+  receiver_depth: 960.0
+  source_depth: 940.0
+
+imaging:
+  method: RTM
+  imaging_condition: source_normalized
+  laplacian_filter: true
+
+synthetic:
+  layout: wells
+  count: 9
+  points: []
+
+sim2seis:
+  stacks:
+    - {name: near, angles: [0.0, 15.0]}
+    - {name: mid, angles: [15.0, 30.0]}
+    - {name: far, angles: [30.0, 45.0]}
+  sub_angles: 5
+  map_to_depth: true
+  sample_interval: null
+  record_length: null
+
+fourd:
+  scenarios: [baseline, pressure_only, saturation_only, combined]
+
+budget:
+  max_ram_gb: 8.0
+  max_disk_gb: 50.0
+  max_cost_class: HIGH
+
+output:
+  directory: runs
