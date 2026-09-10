@@ -81,11 +81,17 @@ source:
 acquisition:
   type: OBN
   centre: [1000.0, 1000.0]
-  receiver_spacing: 100.0
-  receiver_extent: 500.0
-  source_spacing: 250.0
-  source_line_spacing: 250.0
-  source_extent: 500.0
+  # Moving the acquisition up to clear the near-field also narrows the
+  # aperture it subtends at the target: at 660 m standoff a 500 m spread is
+  # only 21 degrees, against 44 at the old 260 m standoff, and a narrow
+  # aperture images arcs rather than reflectors. The spread widens to match.
+  # PML clearance puts the outermost source at 1558 m, so 1000 m is the
+  # practical maximum about a centre at 1000 m.
+  receiver_spacing: 125.0
+  receiver_extent: 1000.0
+  source_spacing: 333.0
+  source_line_spacing: 333.0
+  source_extent: 1000.0
   # 12 PML nodes at 16 m need 192 m of clearance from the domain top
   # at 300 m, so 492 m is the shallowest either may sit.
   receiver_depth: 560.0
