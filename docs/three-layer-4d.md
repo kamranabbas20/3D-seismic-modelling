@@ -144,6 +144,55 @@ that was not what was broken.
 The remaining lever is shot count, and it is the expensive one: one forward
 and one backward propagation each. 100 m spacing would be 121 shots, 7.6x.
 
+## A proper survey: three_layer_obn.yaml
+
+Everything above was measured on a 2 km model whose 1 km spread capped
+offsets at 0.85x the source-to-target standoff and truncated the migration
+aperture at 37 degrees. The domain, not the imaging, was the binding
+constraint. `examples/configs/three_layer_obn.yaml` is the same experiment
+sized for the survey instead: a 2.8 km model, a 1.9 km spread, 55 degrees
+of aperture, offsets to 4.1x the standoff, 11,025 traces against 1,296.
+
+The 25 sources stand in for an OBN node carpet and the 441 receivers for
+the shot carpet, which is how reciprocity makes a dense-shot survey
+affordable - only the sparse set is propagated. It classifies HIGH at
+1.8e11 cell-steps and takes about 80 minutes of modelling and migration
+against 18.
+
+| | 2.0 km, 37 deg | 2.8 km, 55 deg |
+|---|---|---|
+| correlation with the synthetic | +0.512 | **+0.725** |
+| acquisition band / reservoir RMS | 3.68 | **0.38** |
+| RTM window NRMS / sim2seis window NRMS | 2.69 | **1.25** |
+
+The last row is the one to read. It is how much extra variance the imaging
+operator injects beyond the change the rock physics actually put in the
+earth model, and it is internal to each run, so it survives the fact that a
+bigger model dilutes every whole-volume number. It more than halved.
+
+Where each mode puts the anomaly, against the simulated flood at
+(1024, 1393, 1260) m:
+
+| | centroid | off by |
+|---|---|---|
+| sim2seis | (1047, 1408, 1288) m | 28 m lateral, 28 m vertical |
+| RTM | (1042, 1384, 1263) m | **20 m lateral, 3 m vertical** |
+
+With a survey that can see it, the migration locates the 4D anomaly *better
+than the convolutional synthetic does* - 3 m of depth error against 28 -
+having been 116 m out laterally on the narrow-aperture geometry. That
+reverses the conclusion drawn earlier in this document, and it is the point
+of running the expensive path: sim2seis carries a wavelet-asymmetry bias in
+depth that no amount of fold will remove, while the migration positions
+correctly once it is given the aperture to do so.
+
+The flooded volume is 0.041 km3 here against 0.042 in the fast config, so
+the two are comparing the same reservoir change despite the larger model.
+
+What this still is not: real marine OBN shoots every 25-50 m against 95 m
+here, and the solver has no free surface and no water layer, so there are
+no ghosts and no surface multiples.
+
 ## Reading this honestly
 
 sim2seis answers *what change did the rock physics put into the earth model*.
