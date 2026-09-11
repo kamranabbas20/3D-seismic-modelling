@@ -1,0 +1,137 @@
+# Flat three-layer 4D experiment: shale, sand, shale.
+#
+# One injector and one producer 800 m apart in a tabular sand at 1200 m.
+# The only reflectors in the model are the top and base of the sand, so the
+# 4D signal has nowhere to hide and the two seismic modes can be compared
+# on exactly the same change.
+#
+# The monitor time is not guessed - see docs/three-layer-4d.md for how it
+# is derived from the swept pore volume and the seismic resolution.
+
+project:
+  name: three_layer_4d
+  description: Shale-sand-shale, one injector and one producer, baseline vs monitor
+  seed: 1
+
+domains:
+  geology_bounds: [[0, 2000], [0, 2000], [0, 1800]]
+  geology_spacing: [25.0, 25.0, 10.0]
+  # The top is at 300 m, not 700, so the acquisition can sit well above
+  # the target. With sources only 1.6 wavelengths above the sand the
+  # injection near-field overlaps the reservoir top and no amount of
+  # filtering separates them; at 540 m it is 4.2 wavelengths clear.
+  propagation_bounds: [[250, 1750], [250, 1750], [300, 1700]]
+  propagation_spacing: [16.0, 16.0, 16.0]
+  target_bounds: [[500, 1500], [500, 1500], [1150, 1400]]
+
+geology:
+  template: three_layer
+  parameters:
+    extent: [2000.0, 2000.0, 1800.0]
+    z_reservoir: 1200.0
+    gross: 150.0
+    seed: 1
+
+wells:
+  pattern: line_drive
+  parameters:
+    centre: [1000.0, 1000.0]
+    n_injectors: 1
+    n_producers: 1
+    separation: 800.0
+    perforation: [1200.0, 1350.0]
+
+reservoir:
+  source: flow
+  baseline:
+    sw: 0.25
+    sg: 0.0
+    temperature: 80.0
+    pressure_gradient: 10500.0
+
+simulation:
+  duration_days: 3650.0
+  report_every_days: 91.25
+  # Derived, not picked. The flood must outgrow the first Fresnel zone at
+  # the reservoir (350 m at 12 Hz and 1200 m) or seismic sees a blur rather
+  # than an anomaly with shape; the flood radius reaches it at day 548 and
+  # clears it with margin (1.09x) at day 730. Amplitude is never the
+  # binding constraint here - the 4D NRMS is already 11% at one year - and
+  # the flood reaches the model boundary around day 2650, so later monitors
+  # are contaminated. Two years is also the conventional field repeat.
+  monitor_day: 730.0
+  sweep_years: 10.0
+
+rock_physics:
+  temperature: 80.0
+  overburden_density: 2300.0
+
+solver:
+  spatial_order: 8
+  courant_safety: 0.9
+  record_length: 1.2
+  pml_nodes: 12
+  backend: auto
+  dtype: float32
+
+source:
+  type: ricker
+  frequency: 12.0
+
+acquisition:
+  type: OBN
+  centre: [1000.0, 1000.0]
+  # Moving the acquisition up to clear the near-field also narrows the
+  # aperture it subtends at the target: at 660 m standoff a 500 m spread is
+  # only 21 degrees, against 44 at the old 260 m standoff, and a narrow
+  # aperture images arcs rather than reflectors. The spread widens to match.
+  # PML clearance puts the outermost source at 1558 m, so 1000 m is the
+  # practical maximum about a centre at 1000 m.
+  # 125 m, and measured. The operator limit V/(4 fmax sin(theta)) is 35 m at
+  # this aperture, so this is 3.6x too coarse on paper - but refining it to
+  # 32 m (1,024 nodes) was tried and moved nothing in the reservoir:
+  # correlation with the synthetic 0.512 -> 0.466, window NRMS 39.53 ->
+  # 39.59 %, for 1.75x the run time. It halved the acquisition-band artefact
+  # (3.68 -> 1.64) which sits above the target and is tapered anyway.
+  # The reservoir image is limited by the 16 shots, not by receiver
+  # sampling. See docs/three-layer-4d.md.
+  receiver_spacing: 125.0
+  receiver_extent: 1000.0
+  source_spacing: 333.0
+  source_line_spacing: 333.0
+  source_extent: 1000.0
+  # 12 PML nodes at 16 m need 192 m of clearance from the domain top
+  # at 300 m, so 492 m is the shallowest either may sit.
+  receiver_depth: 560.0
+  source_depth: 540.0
+
+imaging:
+  method: RTM
+  imaging_condition: source_normalized
+  laplacian_filter: true
+
+synthetic:
+  layout: wells
+  count: 9
+  points: []
+
+sim2seis:
+  stacks:
+    - {name: near, angles: [0.0, 15.0]}
+    - {name: mid, angles: [15.0, 30.0]}
+    - {name: far, angles: [30.0, 45.0]}
+  sub_angles: 5
+  map_to_depth: true
+  sample_interval: null
+  record_length: null
+
+fourd:
+  scenarios: [baseline, pressure_only, saturation_only, combined]
+
+budget:
+  max_ram_gb: 8.0
+  max_disk_gb: 50.0
+  max_cost_class: HIGH
+
+output:
+  directory: runs
