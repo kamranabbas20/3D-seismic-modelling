@@ -31,7 +31,9 @@ import streamlit as st
 # imported normally, which is why everything below it can stay relative.
 from sim3d.core.config import ExperimentConfig
 from sim3d.core.errors import Sim3DError
+from sim3d.fourd.noise import NoiseModel
 from sim3d.geology.bodies import BODY_TYPES, GeoBody
+from sim3d.wave.wavelets import DEFAULT_ORMSBY_CORNERS, WAVELETS
 from sim3d.geology.facies import FACIES
 from sim3d.core.graph import explain as explain_dependencies
 from sim3d.core.units import PSI, pa_to_psi, psi_to_pa, si_to_stb_per_day
@@ -1029,6 +1031,102 @@ def _sparse_section(pipe) -> None:
                    "diluted by every cell that did not change.")
 
 
+def _wavelet_controls() -> None:
+    """Choose the source wavelet, and show what it costs in sampling."""
+    source = config().source
+    with st.expander("Source wavelet"):
+        kind = st.radio("Type", WAVELETS, horizontal=True,
+                        index=WAVELETS.index(source.type), key="wavelet_type")
+        if kind == "ricker":
+            frequency = st.slider("Peak frequency (Hz)", 5.0, 80.0,
+                                  float(source.frequency), 1.0)
+            corners = source.corners
+            if (kind, frequency) != (source.type, source.frequency):
+                source.type, source.frequency = kind, frequency
+                invalidate()
+        else:
+            current = list(source.corners or DEFAULT_ORMSBY_CORNERS)
+            a, b, c, d = st.columns(4)
+            corners = [
+                a.number_input("f1 (Hz)", 1.0, 200.0, float(current[0]), 1.0),
+                b.number_input("f2 (Hz)", 1.0, 200.0, float(current[1]), 1.0),
+                c.number_input("f3 (Hz)", 1.0, 200.0, float(current[2]), 1.0),
+                d.number_input("f4 (Hz)", 1.0, 200.0, float(current[3]), 1.0),
+            ]
+            if (kind, corners) != (source.type, source.corners):
+                if corners[0] < corners[1] < corners[2] < corners[3]:
+                    source.type, source.corners = kind, corners
+                    invalidate()
+                else:
+                    st.error("Corners must increase: f1 < f2 < f3 < f4.")
+
+        pipe = pipeline()
+        dt = pipe.seismic_sample_interval()
+        wavelet = pipe.wavelet(np.arange(int(0.6 / dt)) * dt)
+        st.plotly_chart(ui.series_figure(
+            np.arange(wavelet.size) * dt, {"wavelet": wavelet},
+            xlabel="time (s)", ylabel="amplitude", height=220),
+            width="stretch", key="wavelet_shape")
+        st.caption(
+            f"Fmax {pipe.fmax:,.1f} Hz, sample interval {1000 * dt:.0f} ms. "
+            f"A Ricker is not band-limited at its peak, so its Fmax is a "
+            f"spectral-fraction estimate; an Ormsby's is its top corner "
+            f"exactly. Fmax sets the grid and the time sampling, so this is "
+            f"not only a change to the trace.")
+
+
+def _noise_controls(cfg) -> None:
+    """Survey noise and how much of it repeats between surveys."""
+    with st.expander("Survey noise and repeatability"):
+        current = dict(cfg.noise or {})
+        a, b, c = st.columns(3)
+        level = a.slider("Noise (fraction of signal RMS)", 0.0, 0.5,
+                         float(current.get("level", 0.0)), 0.01,
+                         help="0 disables it. Without a noise term NRMS has "
+                              "no floor and is not comparable to field data.")
+        repeat = b.slider("Repeatability", 0.0, 1.0,
+                          float(current.get("repeatability", 0.0)), 0.05,
+                          help="How much of the noise is the same in both "
+                               "surveys. 1 cancels completely in the "
+                               "difference; 0 survives it entirely.")
+        seed = c.number_input("Seed", 0, 10**6,
+                              int(current.get("seed", 1)), 1)
+        chosen = {"level": level, "repeatability": repeat, "seed": int(seed)}
+        if chosen != current:
+            cfg.noise = chosen
+            invalidate()
+        model = NoiseModel(**chosen)
+        (st.info if model.active else st.warning)(model.describe())
+        st.caption("Each survey gets sqrt(r)·shared + sqrt(1−r)·its own, so a "
+                   "single survey carries the same noise whatever repeats — "
+                   "only the difference changes. That makes the floor "
+                   "predictable: 100·level·√(2(1−r)) percent.")
+
+
+def _shift_controls(cfg) -> None:
+    """Whether to estimate 4D time shifts, and over what window."""
+    with st.expander("4D time shifts"):
+        on = st.checkbox("Estimate time shifts and align the monitors",
+                         value=bool(cfg.time_shifts))
+        a, b, c = st.columns(3)
+        window = a.slider("Correlation window (ms)", 20.0, 400.0,
+                          1000 * float(cfg.shift_window), 10.0)
+        step = b.slider("Hop (ms)", 4.0, 100.0, 1000 * float(cfg.shift_step), 2.0)
+        search = c.slider("Search range (ms)", 5.0, 200.0,
+                          1000 * float(cfg.max_shift), 5.0)
+        chosen = (on, window / 1000.0, step / 1000.0, search / 1000.0)
+        if chosen != (cfg.time_shifts, cfg.shift_window, cfg.shift_step,
+                      cfg.max_shift):
+            (cfg.time_shifts, cfg.shift_window, cfg.shift_step,
+             cfg.max_shift) = chosen
+            invalidate()
+        st.caption("A softened reservoir delays everything beneath it, whether "
+                   "or not that rock changed. Differencing without accounting "
+                   "for it turns a shift into a derivative-shaped anomaly at "
+                   "the wrong depth — on the three-layer model a 6 ms shift "
+                   "alone makes 58% NRMS.")
+
+
 def page_sim2seis() -> None:
     pipe = pipeline()
     st.title("Synthetic seismic volume")
@@ -1058,6 +1156,10 @@ def page_sim2seis() -> None:
         st.caption("Beyond about 45 degrees the Aki-Richards linearisation "
                    "stops being trustworthy, and the tool says so rather than "
                    "quietly extrapolating.")
+
+    _wavelet_controls()
+    _noise_controls(cfg)
+    _shift_controls(cfg)
 
     if st.button("Build synthetic volume", type="primary"):
         progress = st.progress(0.0, text="converting")

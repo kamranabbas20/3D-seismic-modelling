@@ -80,3 +80,75 @@ def dominant_frequency(w: np.ndarray, dt: float) -> float:
     """Spectral-peak frequency of a time series, in Hz."""
     freq, spec = amplitude_spectrum(w, dt)
     return float(freq[int(np.argmax(spec))])
+
+
+#: Wavelets ``source.type`` accepts.
+WAVELETS = ("ricker", "ormsby")
+
+#: Ormsby corners used when a configuration asks for one without saying which.
+DEFAULT_ORMSBY_CORNERS = (5.0, 10.0, 40.0, 50.0)
+
+
+def ormsby_delay(f1: float) -> float:
+    """Onset delay that contains an Ormsby's low-frequency tail.
+
+    An Ormsby is zero-phase and its tails decay only as ``1/tau^2``, so it
+    needs far more lead-in than a Ricker.  One period of the lowest corner
+    leaves the truncated amplitude around a percent of peak; cutting closer
+    puts a step at ``t = 0`` and rings across the whole passband.
+    """
+    if f1 <= 0:
+        raise ConfigError(f"lowest Ormsby corner must be positive, got {f1}")
+    return 1.0 / f1
+
+
+def build_wavelet(t: np.ndarray, kind: str = "ricker", frequency: float = 20.0,
+                  corners=None) -> np.ndarray:
+    """The source time function a configuration asks for.
+
+    The delay is set here rather than left to each wavelet's own default,
+    because the callers build these on arrays as long as a whole record and
+    a wavelet centred in the middle of one would fire the shot half a second
+    late.
+    """
+    kind = str(kind).lower()
+    if kind not in WAVELETS:
+        raise ConfigError(
+            f"source type {kind!r} is not available; valid types are "
+            f"{sorted(WAVELETS)}")
+    if kind == "ricker":
+        return ricker(t, frequency)
+    f1, f2, f3, f4 = _corners(corners)
+    return ormsby(t, f1, f2, f3, f4, t0=ormsby_delay(f1))
+
+
+def wavelet_fmax(kind: str = "ricker", frequency: float = 20.0, corners=None,
+                 fraction: float = 0.05) -> float:
+    """Practical maximum frequency, for grid-sampling and aliasing checks.
+
+    An Ormsby is band-limited by construction, so its answer is exactly the
+    top corner rather than a spectral-fraction heuristic: asking where a
+    trapezoid has fallen to 5% of its peak is asking a question it has
+    already answered.
+    """
+    kind = str(kind).lower()
+    if kind not in WAVELETS:
+        raise ConfigError(
+            f"source type {kind!r} is not available; valid types are "
+            f"{sorted(WAVELETS)}")
+    if kind == "ricker":
+        return ricker_fmax(frequency, fraction)
+    return float(_corners(corners)[3])
+
+
+def _corners(corners) -> tuple[float, float, float, float]:
+    if corners is None:
+        return DEFAULT_ORMSBY_CORNERS
+    values = [float(c) for c in corners]
+    if len(values) != 4:
+        raise ConfigError(
+            f"Ormsby needs four corner frequencies [f1, f2, f3, f4], got "
+            f"{len(values)}")
+    if not values[0] < values[1] < values[2] < values[3]:
+        raise ConfigError(f"Ormsby corners must increase, got {tuple(values)}")
+    return tuple(values)

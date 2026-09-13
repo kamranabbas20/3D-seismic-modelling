@@ -33,6 +33,10 @@ from ..core.planning import (
 )
 from ..fourd.decomposition import decompose
 from ..fourd.metrics import nrms
+from ..fourd.noise import NoiseModel, add_survey_noise
+from ..fourd.timeshift import (
+    align, estimated_time_shift, resample_shift, true_time_shift,
+)
 from ..fourd.scenarios import (
     SCENARIO_NAMES, build_earth_models, build_states, build_states_from_flow,
 )
@@ -60,7 +64,7 @@ from ..wave.acoustic import (
 )
 from ..wave.cpml import PMLSettings
 from ..wave.sources import PointSource
-from ..wave.wavelets import ricker, ricker_fmax
+from ..wave.wavelets import build_wavelet, wavelet_fmax
 from ..wells.completion import Completion, default_completions
 from ..wells.controls import ControlMode, WellControl, check_rates, suggest_control
 from ..wells.well import Well, WellSet, pattern
@@ -93,6 +97,7 @@ class ExperimentResult:
     preview: dict | None = None
     synthetics: dict | None = None
     volumes: dict | None = None
+    time_shifts: dict | None = None
     gathers: dict[str, list[ShotRecord]] = field(default_factory=dict)
     images: dict[str, RTMResult] = field(default_factory=dict)
     decomposition: dict | None = None
@@ -117,6 +122,11 @@ class Pipeline:
                 f"unknown dtype {self.config.solver.dtype!r}; choose from {sorted(DTYPES)}"
             ) from None
 
+    def wavelet(self, t) -> np.ndarray:
+        """The configured source time function on the sample times ``t``."""
+        source = self.config.source
+        return build_wavelet(t, source.type, source.frequency, source.corners)
+
     @property
     def fmax(self) -> float:
         """Practical maximum frequency of the source, for sampling decisions.
@@ -126,7 +136,8 @@ class Pipeline:
         two (spec section 11).
         """
         source = self.config.source
-        return ricker_fmax(source.frequency, source.bandwidth_fraction)
+        return wavelet_fmax(source.type, source.frequency, source.corners,
+                            source.bandwidth_fraction)
 
     def _timed(self, name: str, fn):
         start = time.perf_counter()
@@ -514,7 +525,7 @@ class Pipeline:
         """Fast 1D convolution screening (spec section 82)."""
         if self.result.preview is None:
             models, dt = self.propagation_models()
-            wavelet = ricker(np.arange(int(2.0 / dt)) * dt, self.config.source.frequency)
+            wavelet = self.wavelet(np.arange(int(2.0 / dt)) * dt)
             self.result.preview = self._timed("preview", lambda: {
                 name: convolution_preview(models[name], wavelet, dt,
                                           t_max=self.config.solver.record_length)
@@ -538,7 +549,7 @@ class Pipeline:
             locations = resolve_locations(
                 models["baseline"].grid, layout=cfg.layout, wells=self.wells(),
                 points=cfg.points, count=cfg.count, region=self.domains.target)
-            wavelet = ricker(np.arange(int(2.0 / dt)) * dt, self.config.source.frequency)
+            wavelet = self.wavelet(np.arange(int(2.0 / dt)) * dt)
             self.result.synthetics = self._timed("synthetic", lambda: {
                 name: sparse_synthetic(models[name], locations, wavelet, dt,
                                        t_max=self.config.solver.record_length)
@@ -559,7 +570,7 @@ class Pipeline:
             cfg = self.config.sim2seis
             grid = earth.models["baseline"].grid
             dt = self.seismic_sample_interval()
-            wavelet = ricker(np.arange(int(2.0 / dt)) * dt, self.config.source.frequency)
+            wavelet = self.wavelet(np.arange(int(2.0 / dt)) * dt)
             # One time axis for all four, set by the slowest of them. Letting
             # each scenario end at its own deepest two-way time would put the
             # monitors on axes a baseline cannot be subtracted from - the same
@@ -584,7 +595,96 @@ class Pipeline:
             self.result.volumes = self._timed("sim2seis", build)
             for note in self.result.volumes["baseline"].notes:
                 self.result.notes.append(f"sim2seis: {note}")
+            self._add_noise(self.result.volumes, dt)
         return self.result.volumes
+
+    def noise_model(self) -> NoiseModel:
+        """The configured survey noise, band-limited to the source by default."""
+        spec = dict(self.config.sim2seis.noise or {})
+        if spec.get("band") is not None:
+            spec["band"] = tuple(spec["band"])
+        return NoiseModel(**spec)
+
+    def _add_noise(self, volumes: dict, dt: float) -> None:
+        """Add correlated-between-surveys noise to every angle stack.
+
+        One realisation per stack, shared across the scenarios, so the part
+        that repeats really is the same trace in each survey - drawing
+        independently per scenario would make ``repeatability`` a setting
+        with no effect.
+        """
+        model = self.noise_model()
+        self.result.notes.append(f"sim2seis: {model.describe()}")
+        if not model.active:
+            return
+        band = (1.0, self.fmax)
+        for stack in volumes["baseline"].names:
+            noisy = add_survey_noise(
+                {name: volumes[name].time_cubes[stack] for name in volumes},
+                dt, model, band=band)
+            for name, cube in noisy.items():
+                volumes[name].time_cubes[stack] = cube.astype(
+                    volumes[name].time_cubes[stack].dtype)
+
+    def time_shifts(self) -> dict:
+        """4D time shifts per scenario, and the monitors aligned to baseline.
+
+        The true shift comes from the two-way-time cubes the volumes already
+        carry, which is exact; the estimated one is what a windowed
+        correlation recovers from the traces, which is what a processor
+        would have.  Both are kept: their difference is the measurement
+        error, and it cannot be seen from either alone.
+        """
+        if self.result.time_shifts is None:
+            volumes = self.sim2seis()
+            cfg = self.config.sim2seis
+            dt = self.seismic_sample_interval()
+            base = volumes["baseline"]
+            stack = base.names[0]
+            times = base.times
+
+            def build() -> dict:
+                out = {}
+                for name, volume in volumes.items():
+                    if name == "baseline":
+                        continue
+                    true = true_time_shift(base.twt, volume.twt, times)
+                    estimate, centres = estimated_time_shift(
+                        base.time_cube(stack), volume.time_cube(stack), dt,
+                        window=cfg.shift_window, step=cfg.shift_step,
+                        max_shift=cfg.max_shift)
+                    full = resample_shift(estimate, centres, times)
+                    # The estimate on the true shift's own axis, so the two
+                    # are subtractable: the residual is the measurement error
+                    # and is the reason both are kept.
+                    residual = full - true
+                    # Where the baseline carries no signal there is nothing
+                    # to correlate, so a shift measured there is whatever the
+                    # noise happened to favour.  Quality is reported on the
+                    # live samples; averaging in the dead ones would grade the
+                    # estimator on data it never had.
+                    amplitude = np.abs(base.time_cube(stack))
+                    live = amplitude > 0.05 * amplitude.max()
+                    out[name] = {
+                        "true": true, "estimated": estimate, "full": full,
+                        "residual": residual, "live": live,
+                        "centres": centres, "stack": stack,
+                        "aligned": {s: align(volume.time_cube(s), full, dt)
+                                    for s in volume.names},
+                    }
+                return out
+
+            self.result.time_shifts = self._timed("time shifts", build)
+            for name, entry in self.result.time_shifts.items():
+                live = entry["live"]
+                peak = 1000.0 * float(np.abs(entry["true"]).max())
+                error = 1000.0 * float(np.sqrt(
+                    np.mean(entry["residual"][live] ** 2))) if live.any() else float("nan")
+                self.result.notes.append(
+                    f"time shift [{name}]: peak {peak:.2f} ms from the two-way-"
+                    f"time cubes; the windowed estimate recovers it to "
+                    f"{error:.2f} ms RMS where there is signal")
+        return self.result.time_shifts
 
     #: The sample intervals real seismic is written at, coarsest first.
     SAMPLE_LADDER = (0.004, 0.002, 0.001)
@@ -617,7 +717,7 @@ class Pipeline:
         models, dt = self.propagation_models()
         acq = self.acquisition()
         nt = steps_for_duration(self.config.solver.record_length, dt)
-        wavelet = ricker(np.arange(nt) * dt, self.config.source.frequency)
+        wavelet = self.wavelet(np.arange(nt) * dt)
         settings = self.solver_settings(dt)
         start = time.perf_counter()
         for name in self.config.fourd.scenarios:

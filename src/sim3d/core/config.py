@@ -234,9 +234,14 @@ class SolverConfig:
 
 @dataclass
 class SourceConfig:
+    #: ``ricker`` or ``ormsby``.
     type: str = "ricker"
+    #: Peak frequency of a Ricker, Hz.  Ignored by an Ormsby.
     frequency: float = 20.0
+    #: Ormsby corners ``[f1, f2, f3, f4]``, Hz.  ``None`` uses 5/10/40/50.
+    corners: list | None = None
     #: Spectral fraction defining the practical Fmax used for grid checks.
+    #: An Ormsby ignores it: a trapezoid's Fmax is its top corner exactly.
     bandwidth_fraction: float = 0.05
 
 
@@ -343,6 +348,16 @@ class Sim2SeisConfig:
     record_length: float | None = None
     #: Also resample every cube onto the depth axis.
     map_to_depth: bool = True
+    #: Survey noise: ``{level, repeatability, band, seed}``.  ``level`` is a
+    #: fraction of the volume's signal RMS and 0 disables it.  Without a
+    #: noise term NRMS has no floor and is not comparable to field data.
+    noise: dict = field(default_factory=dict)
+    #: Estimate 4D time shifts and align the monitors before differencing.
+    time_shifts: bool = True
+    #: Correlation window, hop and search range for the estimate, seconds.
+    shift_window: float = 0.12
+    shift_step: float = 0.02
+    max_shift: float = 0.05
 
     def __post_init__(self) -> None:
         build_stacks(self.stacks)        # validate now, not at run time
