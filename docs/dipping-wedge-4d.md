@@ -113,6 +113,26 @@ changes too little of the travel path to shift the section below it, so this
 reservoir the same code gives the opposite answer: 6 ms of shift alone
 manufactures 58 % NRMS.
 
+## Figures
+
+![the model in the app](figures/wedge-02_geology.png)
+
+*The dipping package in section and map view. The sand runs 1,580 m updip
+to 2,420 m downdip; the wells sit either side of the contact.*
+
+![the section through time](figures/wedge-20_section_timelapse.png)
+
+*The synthetic near stack along the P1 -> I1 line at each survey date.*
+
+![the 4D difference](figures/wedge-21_section_difference.png)
+
+*The same sections differenced against day 0. The anomaly tracks the sand
+and its updip edge advances with the flood.*
+
+Also in `figures/`: `wedge-01_project.png`, `wedge-03_model3d.png` and
+`wedge-04_wells.png`, showing the configuration, the 3D view and the
+completions resolved against the dipping sand.
+
 ## The flood through time, as a section between the wells
 
 The wells share y = 700 m, so the P1 -> I1 line is a constant-y inline and
