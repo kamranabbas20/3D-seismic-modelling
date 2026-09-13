@@ -271,7 +271,8 @@ class Pipeline:
             self._baseline = initial_state(
                 self.geology(), pressure_gradient=b.pressure_gradient,
                 datum_pressure=b.datum_pressure, sw=b.sw, sg=b.sg,
-                temperature=b.temperature)
+                temperature=b.temperature, owc=b.owc, goc=b.goc,
+                transition=b.transition)
         return self._baseline
 
     def flow_settings(self) -> FlowSettings:
@@ -358,9 +359,14 @@ class Pipeline:
                 "rockphysics",
                 lambda: build_earth_models(
                     self.reservoir(), self.geology(), self.rock_physics_config(),
-                    overburden_density=self.config.rock_physics.overburden_density))
+                    overburden_density=self.config.rock_physics.overburden_density,
+                    facies_configs=self.config.rock_physics.facies))
             warnings = self.result.earth.rock_physics["baseline"].warnings
             self.result.notes += [f"rock physics: {w}" for w in warnings]
+            for name, overrides in (self.config.rock_physics.facies or {}).items():
+                self.result.notes.append(
+                    "rock physics [" + name + "]: "
+                    + ", ".join(f"{k}={v}" for k, v in (overrides or {}).items()))
         return self.result.earth
 
     def propagation_models(self) -> tuple[dict[str, AcousticModel], float]:

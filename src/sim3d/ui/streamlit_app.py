@@ -35,6 +35,7 @@ from sim3d.fourd.noise import NoiseModel
 from sim3d.geology.bodies import BODY_TYPES, GeoBody
 from sim3d.wave.wavelets import DEFAULT_ORMSBY_CORNERS, WAVELETS
 from sim3d.geology.facies import FACIES
+from sim3d.rockphysics.dryframe import DRY_FRAME_MODELS
 from sim3d.core.graph import explain as explain_dependencies
 from sim3d.core.units import PSI, pa_to_psi, psi_to_pa, si_to_stb_per_day
 from sim3d.io import ScenarioStore, ViewState
@@ -541,10 +542,76 @@ def _add_body_layer(figure, specs, path) -> None:
             marker=dict(size=9, color=theme.SERIES[1])))
 
 
+def _contact_controls(pipe, cfg) -> None:
+    """Oil-water and gas-oil contacts, and the capillary transition.
+
+    A contact is a horizontal plane cutting across the stratigraphy, so it
+    is the one reflector in the model whose geometry owes nothing to the
+    layering - the flat spot. Leaving them unset keeps the uniform column
+    a mechanistic sweep test wants.
+    """
+    b = cfg.reservoir.baseline
+    (_, _), (_, _), (z0, z1) = pipe.domains.geology.bounds
+    with st.expander("Fluid contacts"):
+        on = st.checkbox("Model fluid contacts", value=b.owc is not None,
+                         key="contacts_on")
+        if not on:
+            if b.owc is not None or b.goc is not None:
+                b.owc = b.goc = None
+                invalidate()
+                st.rerun()
+            st.caption(f"Uniform reservoir saturation: Sw = {b.sw:g} "
+                       f"everywhere, no water leg and no flat spot.")
+            return
+
+        a, c, d, e = st.columns(4)
+        default = b.owc if b.owc is not None else float(0.5 * (z0 + z1))
+        owc = a.number_input("OWC (m)", float(z0), float(z1), float(default), 10.0)
+        gas = c.checkbox("Gas cap", value=b.goc is not None)
+        goc = d.number_input("GOC (m)", float(z0), float(owc),
+                             float(b.goc if b.goc is not None else max(z0, owc - 100.0)),
+                             10.0, disabled=not gas)
+        transition = e.number_input("Transition (m)", 0.0, 500.0,
+                                    float(b.transition), 5.0,
+                                    help="Height above the OWC over which Sw "
+                                         "falls from 1 to Swirr. A linear "
+                                         "ramp, not a J-function. 0 is sharp.")
+        swirr = st.slider("Irreducible water saturation", 0.0, 0.8,
+                          float(b.sw), 0.01,
+                          help="With contacts this is Swirr in the "
+                               "hydrocarbon column, not a uniform Sw.")
+        chosen = (owc, goc if gas else None, transition, swirr)
+        if chosen != (b.owc, b.goc, b.transition, b.sw):
+            if gas and goc >= owc:
+                st.error("The gas-oil contact must sit above the oil-water "
+                         "contact — depth increases downwards.")
+            else:
+                b.owc, b.goc, b.transition, b.sw = chosen
+                invalidate()
+                st.rerun()
+
+        state = pipe.baseline_state()
+        z = pipe.domains.geology.axis(2)
+        mask = state.reservoir_mask
+        profile = {}
+        for label, cube in (("Sw", state.sw), ("So", state.so), ("Sg", state.sg)):
+            column = np.where(mask, cube, np.nan)
+            with np.errstate(invalid="ignore"):
+                profile[label] = np.nanmean(column, axis=(0, 1))
+        st.plotly_chart(ui.series_figure(
+            z, profile, xlabel="depth (m)", ylabel="saturation", height=260),
+            width="stretch", key="contact_profile")
+        st.caption("Reservoir-cell average against depth. The contact is flat "
+                   "whatever the structure does, which is what makes a flat "
+                   "spot cut across dipping reflectors.")
+
+
 def page_reservoir() -> None:
     pipe = pipeline()
     cfg = config()
     st.title("Wells & reservoir state")
+
+    _contact_controls(pipe, cfg)
 
     st.markdown("**Well pattern**")
     st.plotly_chart(ui.map_figure(wells=pipe.wells(), grid=pipe.domains.propagation,
@@ -635,6 +702,69 @@ def page_reservoir() -> None:
                "independently rather than tied together.")
 
 
+def _facies_rockphysics_controls() -> None:
+    """Give a lithology its own dry frame.
+
+    One global frame is not a simplification but a bias, and it falls on the
+    contrast the angle stacks are built on: with a single soft-sand frame
+    the shale of the flat template comes out *slower* than the reservoir
+    sand, so the top of the reservoir barely reflects at all.
+    """
+    rp = config().rock_physics
+    with st.expander("Rock physics by facies"):
+        present = _present_facies()
+        chosen = st.selectbox("Facies", present, key="rp_facies")
+        current = dict((rp.facies or {}).get(chosen, {}))
+        a, b, c = st.columns(3)
+        frame = a.selectbox(
+            "Dry frame", list(DRY_FRAME_MODELS),
+            index=list(DRY_FRAME_MODELS).index(
+                current.get("dry_frame_model", rp.dry_frame_model)),
+            key=f"rpf_{chosen}")
+        phi_c = b.number_input(
+            "Critical porosity", 0.20, 0.80,
+            float(current.get("critical_porosity", rp.critical_porosity)),
+            0.01, key=f"rpc_{chosen}")
+        coord = c.number_input(
+            "Coordination number", 4.0, 20.0,
+            float(current.get("coordination", rp.coordination)), 0.5,
+            key=f"rpn_{chosen}")
+
+        apply, reset = st.columns(2)
+        if apply.button("Apply to facies", type="primary", key=f"rpa_{chosen}"):
+            rp.facies = dict(rp.facies or {})
+            rp.facies[chosen] = {"dry_frame_model": frame,
+                                 "critical_porosity": float(phi_c),
+                                 "coordination": float(coord)}
+            invalidate()
+            st.rerun()
+        if reset.button("Back to the global model", key=f"rpr_{chosen}",
+                        disabled=not current):
+            rp.facies = {k: v for k, v in (rp.facies or {}).items() if k != chosen}
+            invalidate()
+            st.rerun()
+
+        if rp.facies:
+            st.caption("Overridden: " + ", ".join(sorted(rp.facies))
+                       + ". Everything else uses the global frame.")
+        st.caption("Fluid properties stay global — one connected reservoir has "
+                   "one fluid, so temperature, salinity, API and GOR are not "
+                   "offered here and are refused if configured.")
+
+
+def _present_facies() -> list[str]:
+    """Facies the current model actually contains, global order preserved."""
+    try:
+        geology = pipeline().result.geology
+    except Sim3DError:
+        geology = None
+    if geology is None:
+        return list(FACIES)
+    codes = set(np.unique(geology.facies_code).tolist())
+    present = [n for n, f in FACIES.items() if f.code in codes]
+    return present or list(FACIES)
+
+
 def page_rockphysics() -> None:
     pipe = pipeline()
     earth = stage("Running the rock-physics chain", pipe.rockphysics)
@@ -642,6 +772,7 @@ def page_rockphysics() -> None:
     point = cursor_controls(grid)
 
     st.title("Rock physics")
+    _facies_rockphysics_controls()
     for warning in pipe.result.earth.rock_physics["baseline"].warnings:
         st.info(warning, icon="ℹ️")
 

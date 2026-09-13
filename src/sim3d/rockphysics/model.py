@@ -68,6 +68,40 @@ class RockPhysicsConfig:
         ])
 
 
+#: Fields a per-facies override may set.  The frame is a property of the
+#: lithology and differs between a shale and a clean sand; the fluid is the
+#: same fluid everywhere in a connected reservoir, so temperature, salinity,
+#: API, gas gravity and GOR stay global and an attempt to vary them by
+#: facies is refused rather than silently honoured.
+FACIES_OVERRIDABLE = ("mineral_model", "dry_frame_model", "critical_porosity",
+                      "coordination", "fluid_mixing", "brie_exponent",
+                      "pressure_model", "biot")
+
+
+def with_facies_overrides(base: "RockPhysicsConfig", overrides: dict) -> "RockPhysicsConfig":
+    """A copy of ``base`` with one facies' frame settings replaced."""
+    from dataclasses import replace as _replace
+
+    from ..core.errors import ConfigError
+    unknown = set(overrides) - set(FACIES_OVERRIDABLE)
+    if unknown:
+        fluid = {"temperature", "salinity", "api", "gas_gravity", "gor"}
+        hint = (" Fluid properties are global: one connected reservoir has one "
+                "fluid, so varying them by facies would describe a model this "
+                "chain cannot build." if unknown & fluid else "")
+        raise ConfigError(
+            f"unknown key(s) {sorted(unknown)} in a per-facies rock physics "
+            f"override; overridable keys are {sorted(FACIES_OVERRIDABLE)}.{hint}")
+    frame = {k: v for k, v in overrides.items()
+             if k not in ("pressure_model", "biot")}
+    config = _replace(base, **frame) if frame else base
+    if "pressure_model" in overrides or "biot" in overrides:
+        config = _replace(config, pressure=PressureModel(
+            model=overrides.get("pressure_model", base.pressure.model),
+            biot=overrides.get("biot", base.pressure.biot)))
+    return config
+
+
 @dataclass
 class RockPhysicsResult:
     """Every stage of the chain, on the same grid as the inputs."""

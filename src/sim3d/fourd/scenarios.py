@@ -198,7 +198,8 @@ def confining_pressure_from_density(grid: Grid3D, density: np.ndarray,
 def build_earth_models(states: FourDStates, geology: GeologyModel,
                        config: RockPhysicsConfig | None = None,
                        overburden_density: float = 2300.0,
-                       refine_confining: bool = True) -> FourDEarth:
+                       refine_confining: bool = True,
+                       facies_configs: dict | None = None) -> FourDEarth:
     """Run every scenario through the rock-physics chain, independently.
 
     The confining stress is computed once, from the *baseline* density, and
@@ -206,6 +207,13 @@ def build_earth_models(states: FourDStates, geology: GeologyModel,
     monitor survey's overburden has not changed, so letting the confining
     stress drift with the reservoir's own density would put a spurious
     stress change into the pressure-only case.
+
+    ``facies_configs`` maps a facies name to its own configuration.  A
+    shale and a clean sand do not share a dry-frame model or a critical
+    porosity, and making them do so biases exactly the shale-over-sand
+    contrast the angle stacks are built on.  Facies whose configurations
+    are identical are run together, so the cost is the number of *distinct*
+    configurations rather than the number of facies.
     """
     config = config or RockPhysicsConfig()
     grid = states.baseline.grid
@@ -215,12 +223,16 @@ def build_earth_models(states: FourDStates, geology: GeologyModel,
     confining = confining_pressure_from_density(
         grid, np.full(grid.shape, overburden_density))
 
+    groups = _facies_groups(geology, config, facies_configs)
+
     def run(state: ReservoirState, conf: np.ndarray) -> RockPhysicsResult:
-        return elastic_from_state(
-            porosity=state.porosity, composition=composition,
-            saturations=state.saturations, pore_pressure=state.pressure,
-            confining_pressure=conf, config=config,
-        )
+        if len(groups) == 1:
+            return elastic_from_state(
+                porosity=state.porosity, composition=composition,
+                saturations=state.saturations, pore_pressure=state.pressure,
+                confining_pressure=conf, config=groups[0][1],
+            )
+        return _composite(state, composition, conf, groups)
 
     if refine_confining:
         first = run(states.baseline, confining)
@@ -233,3 +245,81 @@ def build_earth_models(states: FourDStates, geology: GeologyModel,
     }
     return FourDEarth(states=states, rock_physics=rock_physics, models=models,
                       confining_pressure=confining)
+
+
+def _facies_groups(geology, base, facies_configs):
+    """``[(mask, config), ...]`` covering the grid, one entry per distinct config.
+
+    The masks partition every cell: a facies with no override, and anything
+    whose code is not in the catalogue, falls to ``base``.
+    """
+    if not facies_configs:
+        return [(None, base)]
+    from ..geology.facies import FACIES
+    from ..rockphysics.model import with_facies_overrides
+
+    code_of = {name: f.code for name, f in FACIES.items()}
+    resolved = {}
+    for name, overrides in facies_configs.items():
+        if name not in code_of:
+            raise ConfigError(
+                f"rock_physics.facies names {name!r}, which is not in the "
+                f"catalogue; it has {sorted(code_of)}")
+        resolved[code_of[name]] = with_facies_overrides(base, overrides or {})
+
+    codes = np.asarray(geology.facies_code)
+    assigned = np.zeros(codes.shape, dtype=bool)
+    groups = []
+    for code, config in resolved.items():
+        mask = codes == code
+        if not mask.any():
+            continue
+        assigned |= mask
+        for i, (existing, other) in enumerate(groups):
+            if other == config:
+                groups[i] = (existing | mask, other)
+                break
+        else:
+            groups.append((mask, config))
+    remainder = ~assigned
+    if remainder.any():
+        for i, (existing, other) in enumerate(groups):
+            if other == base:
+                groups[i] = (existing | remainder, other)
+                break
+        else:
+            groups.append((remainder, base))
+    return groups if groups else [(None, base)]
+
+
+def _composite(state, composition, confining, groups):
+    """Run each distinct configuration over the whole cube, then select.
+
+    Running a masked subset would be cheaper in arithmetic and far more
+    expensive in correctness: every stage of the chain is written for cubes
+    on the grid, and reshaping to a 1D selection and back for each group is
+    exactly where an index slip hides.  The chain is vectorised, so the
+    cost is a small multiple, paid once.
+    """
+    results = [(mask, elastic_from_state(
+        porosity=state.porosity, composition=composition,
+        saturations=state.saturations, pore_pressure=state.pressure,
+        confining_pressure=confining, config=config)) for mask, config in groups]
+    first = results[0][1]
+    merged = {}
+    for field_name in first.__dataclass_fields__:
+        value = getattr(first, field_name)
+        if not isinstance(value, np.ndarray):
+            merged[field_name] = value
+            continue
+        out = np.array(value, dtype=float, copy=True)
+        for mask, result in results[1:]:
+            if mask is not None:
+                out[mask] = getattr(result, field_name)[mask]
+        merged[field_name] = out
+    warnings = []
+    for _, result in results:
+        warnings += [w for w in getattr(result, "warnings", []) if w not in warnings]
+    if "warnings" in first.__dataclass_fields__:
+        merged["warnings"] = warnings
+    return type(first)(**merged)

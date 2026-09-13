@@ -128,11 +128,20 @@ class WellsConfig:
 
 @dataclass
 class BaselineConfig:
+    #: With contacts this is the irreducible water saturation of the
+    #: hydrocarbon column; without them it is the uniform reservoir Sw.
     sw: float = 0.30
     sg: float = 0.0
     temperature: float = 80.0
     pressure_gradient: float = 10500.0
     datum_pressure: float = 101325.0
+    #: Oil-water contact depth, m.  ``None`` gives a uniform saturation and
+    #: no water leg, which is what a mechanistic sweep test wants.
+    owc: float | None = None
+    #: Gas-oil contact depth, m.  Must sit above the OWC.
+    goc: float | None = None
+    #: Height of the capillary transition above the OWC, m.  0 is sharp.
+    transition: float = 0.0
 
 
 @dataclass
@@ -218,6 +227,10 @@ class RockPhysicsSection:
     gor: float = 100.0
     min_effective_pressure: float = 1.0e6
     overburden_density: float = 2300.0
+    #: Per-facies frame overrides, e.g.
+    #: ``{shale: {dry_frame_model: stiff_sand, critical_porosity: 0.55}}``.
+    #: Fluid properties stay global - one connected reservoir has one fluid.
+    facies: dict = field(default_factory=dict)
 
 
 @dataclass

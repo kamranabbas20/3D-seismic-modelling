@@ -16,7 +16,7 @@ from dataclasses import dataclass, field, replace
 
 import numpy as np
 
-from ..core.errors import ValidationError
+from ..core.errors import ConfigError, ValidationError
 from ..core.grid import Grid3D
 
 SATURATION_TOLERANCE = 1e-6
@@ -123,9 +123,57 @@ class ReservoirState:
         return "\n".join(lines)
 
 
+def saturation_from_contacts(z: np.ndarray, sw_irreducible: float,
+                             owc: float | None, goc: float | None,
+                             transition: float = 0.0):
+    """Saturations against depth for a gas/oil/water column.
+
+    Returns ``(sw, so, sg)``.  Depth increases downwards, so the water leg
+    is *below* ``owc`` and any gas cap is *above* ``goc``.
+
+    The contacts are horizontal planes, which is the point of modelling
+    them at all: a contact cuts across dipping stratigraphy, so it is the
+    one reflector in the model whose geometry owes nothing to the layering
+    - the flat spot.
+
+    ``transition`` is the height above the oil-water contact over which
+    water saturation falls from 1 to ``sw_irreducible``.  It is a linear
+    ramp, not a J-function: a capillary saturation-height curve needs a
+    pore-throat model the rest of this tool does not carry, and inventing
+    one would dress a straight line up as measurement.  Zero gives a sharp
+    contact.
+    """
+    if not 0.0 <= sw_irreducible <= 1.0:
+        raise ConfigError(
+            f"irreducible water saturation must be in [0, 1], got {sw_irreducible}")
+    if transition < 0.0:
+        raise ConfigError(f"transition zone must not be negative, got {transition}")
+    if owc is not None and goc is not None and goc >= owc:
+        raise ConfigError(
+            f"the gas-oil contact must sit above the oil-water contact, got "
+            f"goc={goc:g} m and owc={owc:g} m (depth increases downwards)")
+
+    sw = np.full(z.shape, float(sw_irreducible))
+    if owc is not None:
+        if transition > 0.0:
+            height = np.clip((owc - z) / transition, 0.0, 1.0)
+        else:
+            height = (z < owc).astype(float)
+        sw = 1.0 + height * (sw_irreducible - 1.0)
+    sg = np.zeros(z.shape)
+    if goc is not None:
+        # A gas cap displaces the oil, not the irreducible water.
+        in_gas = z < goc
+        sg = np.where(in_gas, 1.0 - sw, 0.0)
+    so = np.clip(1.0 - sw - sg, 0.0, 1.0)
+    return sw, so, sg
+
+
 def initial_state(geology, pressure_gradient: float = 10500.0,
                   datum_pressure: float = 101325.0,
                   sw: float = 0.30, sg: float = 0.0, temperature: float = 80.0,
+                  owc: float | None = None, goc: float | None = None,
+                  transition: float = 0.0,
                   name: str = "baseline") -> ReservoirState:
     """Build a baseline state from a geological model.
 
@@ -134,22 +182,41 @@ def initial_state(geology, pressure_gradient: float = 10500.0,
     (10,500 Pa/m is a typical brine gradient, about 0.105 bar/m).  The
     default datum is one atmosphere, so ``z = 0`` is a land surface; for a
     marine setting add the water column to ``datum_pressure``.
-    Saturations are constant in the reservoir and fully brine-saturated
-    outside it, since only reservoir cells carry hydrocarbons.
+
+    With no ``owc`` the saturations are constant through the reservoir,
+    which is the older behaviour and is what a mechanistic sweep test
+    wants.  Given one, ``sw`` becomes the irreducible saturation of the
+    hydrocarbon column and the model grows a water leg, an optional
+    capillary transition and, with ``goc``, a gas cap - see
+    :func:`saturation_from_contacts`.  Cells outside the reservoir are
+    fully brine-saturated either way.
     """
     grid = geology.grid
     z = grid.axis(2)[None, None, :] * np.ones(grid.shape)
     pressure = datum_pressure + pressure_gradient * z
 
     mask = geology.reservoir_mask
-    sw_field = np.where(mask, sw, 1.0)
-    sg_field = np.where(mask, sg, 0.0)
-    so_field = np.clip(1.0 - sw_field - sg_field, 0.0, 1.0)
+    provenance = [f"hydrostatic gradient {pressure_gradient:g} Pa/m"]
+    if owc is None and goc is None:
+        sw_field = np.where(mask, sw, 1.0)
+        sg_field = np.where(mask, sg, 0.0)
+        so_field = np.clip(1.0 - sw_field - sg_field, 0.0, 1.0)
+        provenance.append(f"reservoir Sw = {sw:g}, Sg = {sg:g}, no contacts")
+    else:
+        sw_c, so_c, sg_c = saturation_from_contacts(z, sw, owc, goc, transition)
+        sw_field = np.where(mask, sw_c, 1.0)
+        so_field = np.where(mask, so_c, 0.0)
+        sg_field = np.where(mask, sg_c, 0.0)
+        provenance.append(
+            "contacts: "
+            + (f"OWC {owc:g} m" if owc is not None else "no OWC")
+            + (f", GOC {goc:g} m" if goc is not None else "")
+            + (f", {transition:g} m transition" if transition else ", sharp")
+            + f", Swirr = {sw:g}")
 
     return ReservoirState(
         grid=grid, porosity=geology.porosity, ntg=geology.ntg, vsh=geology.vsh,
         pressure=pressure, sw=sw_field, so=so_field, sg=sg_field,
         temperature=temperature, reservoir_mask=mask, name=name,
-        provenance=[f"hydrostatic gradient {pressure_gradient:g} Pa/m",
-                    f"reservoir Sw = {sw:g}, Sg = {sg:g}"],
+        provenance=provenance,
     )
