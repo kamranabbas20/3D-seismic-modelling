@@ -107,6 +107,10 @@ class DomainConfig:
 class GeologyConfig:
     template: str = "anticline"
     parameters: dict = field(default_factory=dict)
+    #: Hand-drawn geobodies painted over the template, in order.  They edit
+    #: porosity, permeability, net-to-gross and the reservoir mask, so they
+    #: reach the flow simulation and the seismic, not just the display.
+    bodies: list = field(default_factory=list)
 
 
 @dataclass

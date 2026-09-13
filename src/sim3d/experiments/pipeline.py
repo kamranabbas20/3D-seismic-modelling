@@ -36,6 +36,7 @@ from ..fourd.metrics import nrms
 from ..fourd.scenarios import (
     SCENARIO_NAMES, build_earth_models, build_states, build_states_from_flow,
 )
+from ..geology.bodies import apply_bodies, build_bodies
 from ..geology.builder import GeologyModel, build_geology
 from ..geology.templates import template
 from ..imaging.rtm import RTMSettings, RTMResult, migrate_survey
@@ -155,11 +156,16 @@ class Pipeline:
         if self.result.geology is None:
             cfg = self.config.geology
             layers, faults = template(cfg.template, **cfg.parameters)
+            bodies = build_bodies(cfg.bodies)
             self.result.geology = self._timed(
-                "geology", lambda: build_geology(self.domains.geology, layers, faults))
+                "geology", lambda: apply_bodies(
+                    build_geology(self.domains.geology, layers, faults), bodies))
             self.result.notes.append(
                 f"geology: template '{cfg.template}' with {len(layers)} layers, "
                 f"{len(faults)} fault(s)")
+            # Painted before anything reads the property cube, so the flow
+            # simulation sees the channel rather than the template it replaced.
+            self.result.notes += [f"geobody: {b.describe()}" for b in bodies]
             self._faults = faults
         return self.result.geology
 

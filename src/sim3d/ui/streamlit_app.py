@@ -31,6 +31,8 @@ import streamlit as st
 # imported normally, which is why everything below it can stay relative.
 from sim3d.core.config import ExperimentConfig
 from sim3d.core.errors import Sim3DError
+from sim3d.geology.bodies import BODY_TYPES
+from sim3d.geology.facies import FACIES
 from sim3d.core.graph import explain as explain_dependencies
 from sim3d.core.units import PSI, pa_to_psi, psi_to_pa, si_to_stb_per_day
 from sim3d.io import ScenarioStore, ViewState
@@ -269,6 +271,149 @@ def page_geology() -> None:
     right.caption("Faults are kinematic: they displace the stratigraphy and "
                   "attenuate transport across the plane. They do not solve for "
                   "stress.")
+
+    _geobody_editor(pipe, geology)
+
+
+def body_specs() -> list[dict]:
+    """The editable geobody list, straight off the configuration."""
+    return config().geology.bodies
+
+
+def _geobody_editor(pipe, geology) -> None:
+    """Draw a channel or a lens and paint it into the property cube.
+
+    The body edits porosity, permeability, net-to-gross and the reservoir
+    mask, so it reaches the flow simulation and through it the 4D seismic.
+    That is the whole point of drawing one: not to annotate the display but
+    to ask what this geometry would do to the sweep.
+    """
+    grid = geology.grid
+    specs = body_specs()
+    st.subheader("Geobodies")
+    st.caption("Drawn bodies are painted over the template in order, and they "
+               "change the properties the flow simulation reads — so a channel "
+               "drawn here moves the water, the 4D anomaly and the seismic, "
+               "not just the picture.")
+
+    drawing = st.toggle("Draw a body", key="drawing",
+                        help="Then click the map to lay down its path.")
+    path = st.session_state.setdefault("body_path", [])
+
+    if drawing:
+        a, b, c = st.columns([1, 1, 2])
+        kind = a.radio("Kind", BODY_TYPES, horizontal=True, key="body_kind")
+        facies_name = b.selectbox("Facies", list(FACIES), key="body_facies",
+                                  index=list(FACIES).index("clean_sandstone"))
+        need = 2 if kind == "channel" else 3
+        c.info(f"Click the map to add points — a {kind} needs at least {need}. "
+               f"{len(path)} so far.", icon="🖱️")
+
+        figure = ui.map_figure(wells=pipe.wells(), grid=pipe.domains.propagation,
+                               pml_nodes=config().solver.pml_nodes,
+                               bounds=grid.bounds)
+        _add_body_layer(figure, specs, path)
+        _add_placement_layer(figure, grid, enabled=True)
+        event = st.plotly_chart(figure, width="stretch", key="bodymap",
+                                on_select="rerun", selection_mode="points")
+        if event and event.get("selection", {}).get("points"):
+            point = event["selection"]["points"][-1]
+            xy = [float(point["x"]), float(point["y"])]
+            if xy != (path[-1] if path else None):
+                path.append(xy)
+                st.rerun()
+
+        d, e, f, g = st.columns(4)
+        width = d.number_input("Width (m)", 25.0, 5000.0, 300.0, 25.0,
+                               disabled=kind != "channel",
+                               help="Full width of the channel, not the half.")
+        (_, _), (_, _), (z0, z1) = grid.bounds
+        top = e.number_input("Top (m)", float(z0), float(z1),
+                             float(np.clip(_reservoir_top(geology), z0, z1)), 10.0)
+        thickness = f.number_input("Thickness (m)", float(grid.dz),
+                                   float(z1 - z0), 40.0, 10.0)
+        name = g.text_input("Name", _unique_body_name(kind))
+
+        place, clear, undo = st.columns(3)
+        if place.button("Place body", type="primary",
+                        disabled=len(path) < need):
+            if name in {b["name"] for b in specs}:
+                st.error(f"There is already a body called {name!r}.")
+            else:
+                specs.append({"name": name, "type": kind, "path": list(path),
+                              "width": float(width), "top": float(top),
+                              "thickness": float(thickness),
+                              "facies": facies_name})
+                st.session_state.body_path = []
+                # Drop the shared cursor onto the body: it is almost always
+                # thinner than the reservoir, so a slice left where it was
+                # shows the template and the user concludes nothing happened.
+                st.session_state.cursor_z = float(np.clip(
+                    top + 0.5 * thickness, *grid.bounds[2]))
+                invalidate()
+                st.rerun()
+        if undo.button("Undo point", disabled=not path):
+            path.pop()
+            st.rerun()
+        if clear.button("Clear path", disabled=not path):
+            st.session_state.body_path = []
+            st.rerun()
+
+    if not specs:
+        st.info("No drawn bodies. The geology is the template alone.")
+        return
+
+    st.dataframe({
+        b["name"]: {"type": b.get("type", "channel"),
+                    "facies": b.get("facies", "clean_sandstone"),
+                    "points": len(b.get("path", [])),
+                    "width (m)": b.get("width", 0.0),
+                    "top (m)": b.get("top", 0.0),
+                    "thickness (m)": b.get("thickness", 0.0)}
+        for b in specs
+    }, width="stretch")
+    remove = st.selectbox("Remove a body", [b["name"] for b in specs],
+                          key="remove_body")
+    if st.button("Remove"):
+        specs[:] = [b for b in specs if b["name"] != remove]
+        invalidate()
+        st.rerun()
+
+
+def _reservoir_top(geology) -> float:
+    """Where the reservoir starts, as the default top for a new body."""
+    z = geology.grid.axis(2)
+    reservoir = geology.reservoir_mask.any(axis=(0, 1))
+    return float(z[reservoir][0]) if reservoir.any() else float(z[len(z) // 2])
+
+
+def _unique_body_name(kind: str) -> str:
+    taken = {b["name"] for b in config().geology.bodies}
+    index = 1
+    while f"{kind}_{index}" in taken:
+        index += 1
+    return f"{kind}_{index}"
+
+
+def _add_body_layer(figure, specs, path) -> None:
+    """Draw the bodies that exist and the path being laid down."""
+    import plotly.graph_objects as go
+    for i, spec in enumerate(specs):
+        pts = np.asarray(spec.get("path") or [], dtype=float)
+        if pts.size == 0:
+            continue
+        closed = spec.get("type", "channel") == "lens"
+        xs = np.append(pts[:, 0], pts[0, 0]) if closed else pts[:, 0]
+        ys = np.append(pts[:, 1], pts[0, 1]) if closed else pts[:, 1]
+        figure.add_trace(go.Scatter(
+            x=xs, y=ys, mode="lines", name=spec["name"],
+            line=dict(color=theme.SERIES[2 + i % 3], width=3)))
+    if path:
+        pts = np.asarray(path, dtype=float)
+        figure.add_trace(go.Scatter(
+            x=pts[:, 0], y=pts[:, 1], mode="lines+markers", name="new body",
+            line=dict(color=theme.SERIES[1], width=3, dash="dot"),
+            marker=dict(size=9, color=theme.SERIES[1])))
 
 
 def page_reservoir() -> None:
