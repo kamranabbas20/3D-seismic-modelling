@@ -57,7 +57,10 @@ from ..reservoir.relperm import CoreyRelativePermeability
 from ..reservoir.state import initial_state
 from ..rockphysics.model import RockPhysicsConfig
 from ..rockphysics.pressure import PressureModel
-from ..validation.qc import QCResult, check_geometry, check_model, check_state
+from ..validation.qc import (
+    QCResult, check_geometry, check_layer_connectivity, check_model,
+    check_state,
+)
 from ..wave.acoustic import (
     AcousticModel, AcousticSolver, ShotRecord, SolverSettings, common_dt,
     steps_for_duration,
@@ -480,6 +483,7 @@ class Pipeline:
             models, dt = self.propagation_models()
             states = self.reservoir()
             result = QCResult()
+            check_layer_connectivity(self.geology(), result)
             check_state(states.baseline, result)
             for name in SCENARIO_NAMES:
                 sub = check_model(models[name], self.config.source.frequency,

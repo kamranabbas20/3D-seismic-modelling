@@ -371,3 +371,46 @@ def test_layer_overrides_reach_the_pipeline():
     assert float(geology.porosity[geology.layer_index == index].mean()) == \
         pytest.approx(0.31, abs=0.02)
     assert any("layer override: reservoir" in n for n in pipeline.result.notes)
+
+
+def test_a_steeply_dipping_bed_can_fall_apart_on_a_coarse_grid():
+    """The failure that looks like a badly chosen rate.
+
+    A bed of thickness g dipping at theta drops dx*tan(theta) per lateral
+    cell, so adjacent columns overlap by only g - dx*tan(theta). Once that
+    is under a cell the reservoir is a staircase of disconnected blocks:
+    the wells lose pressure communication, rates collapse against their BHP
+    limits, and the material balance still closes, because nothing is
+    conserved wrongly - the fluid simply has nowhere to go.
+    """
+    from sim3d.core.grid import Grid3D
+    from sim3d.geology.builder import build_geology
+    from sim3d.validation.qc import Status, check_layer_connectivity
+
+    def built(dx, dz):
+        grid = Grid3D(origin=(0.0, 0.0, 0.0), spacing=(dx, 30.0, dz),
+                      shape=(int(1000 / dx) + 1, 5, int(2800 / dz) + 1))
+        layers, faults = template("three_layer", extent=(1000.0, 150.0, 2800.0),
+                                  z_reservoir=2000.0, gross=20.0, dip=40.0,
+                                  heterogeneous=False)
+        return build_geology(grid, layers, faults)
+
+    # 20 * tan(40) = 16.8 m against a 20 m bed: 3 m of overlap, under a cell.
+    coarse = check_layer_connectivity(built(20.0, 5.0)).checks[0]
+    assert coarse.status is Status.FAIL
+    assert "disconnected" in coarse.message
+
+    # 10 * tan(40) = 8.4 m: 11.6 m of overlap, about three cells.
+    fine = check_layer_connectivity(built(10.0, 4.0)).checks[0]
+    assert fine.status is Status.PASS
+
+
+def test_a_flat_bed_is_connected_at_any_cell_size():
+    from sim3d.core.grid import Grid3D
+    from sim3d.geology.builder import build_geology
+    from sim3d.validation.qc import Status, check_layer_connectivity
+    grid = Grid3D(origin=(0.0, 0.0, 0.0), spacing=(50.0, 50.0, 5.0),
+                  shape=(21, 5, 561))
+    layers, faults = template("three_layer", z_reservoir=2000.0, gross=20.0)
+    check = check_layer_connectivity(build_geology(grid, layers, faults)).checks[0]
+    assert check.status is Status.PASS

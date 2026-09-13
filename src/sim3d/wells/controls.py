@@ -212,7 +212,12 @@ def suggest_control(well, geology, completions, wells, reservoir_pressure: float
     bound = "pattern scale" if pattern < deliverability else "deliverability"
 
     injector = well.role == "injector"
-    depth = 0.5 * sum(geology.grid.bounds[2])
+    # The depth this well is completed at, not the middle of the grid. On a
+    # dipping structure a downdip injector sits far below mid-grid, and
+    # capping it at the mid-grid fracture pressure can put its limit *under*
+    # the local reservoir pressure - a well that cannot inject at all, from
+    # a number nobody chose.
+    depth = _completion_depth(well, geology)
     if injector:
         limit = min(reservoir_pressure + 2.0 * drawdown, FRACTURE_GRADIENT * depth)
     else:
@@ -245,6 +250,22 @@ def pore_volume(geology, mask=None) -> float:
     cell = grid.dx * grid.dy * grid.dz
     selection = geology.reservoir_mask if mask is None else mask
     return float(np.sum(geology.porosity[selection] * geology.ntg[selection]) * cell)
+
+
+def _completion_depth(well, geology) -> float:
+    """Mid-depth of the units the well is completed in, or the grid centre.
+
+    A fracture gradient is a pressure at a depth, so the depth has to be
+    the one the well actually injects into.
+    """
+    try:
+        from .completion import layer_intersections
+        units = [u for u in layer_intersections(well, geology) if u.is_reservoir]
+    except Exception:
+        units = []
+    if not units:
+        return 0.5 * sum(geology.grid.bounds[2])
+    return float(np.mean([0.5 * (u.top + u.base) for u in units]))
 
 
 def check_rates(wells, controls: dict, geology, reservoir_pressure: float,
@@ -311,7 +332,11 @@ def check_rates(wells, controls: dict, geology, reservoir_pressure: float,
         control = controls.get(well.name)
         if control is None or control.bhp_limit is None:
             continue
-        depth = 0.5 * sum(grid.bounds[2])
+        # The well's own completion depth, not the middle of the grid. On a
+        # dipping structure those differ by hundreds of metres, and the
+        # mid-grid version warns a deep injector that is safe while staying
+        # quiet about a shallow one that is not.
+        depth = _completion_depth(well, geology)
         if well.role == "injector" and control.bhp_limit > FRACTURE_GRADIENT * depth:
             warnings.append(
                 f"{well.name} may inject up to "

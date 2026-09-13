@@ -1,0 +1,125 @@
+# A 40-degree dipping three-layer trap: downdip water injection, updip
+# production, and an oil-water contact cutting the sand.
+#
+# The point of the 40-degree dip is that it is steep. Two consequences are
+# structural, not numerical, and they decide what this experiment can show:
+#
+#   * A 20 m sand at 2,000 m is below tuning. Vp there is about 2,600 m/s,
+#     so at 30 Hz the wavelength is ~87 m and the bed is a quarter of it.
+#     The top and base of the sand do not resolve as two events; they
+#     interfere into one composite wavelet whose amplitude carries the
+#     thickness. That is the physics, not a limitation of the modelling.
+#   * A 1D convolution has no lateral energy transport, so it mispositions
+#     anything steeper than a few degrees. sim2seis will put this reflector
+#     in the wrong place by construction. Only the migrated path can image
+#     it, and comparing the two is the honest way to show that.
+#
+project:
+  name: dipping_wedge_4d
+  description: >
+    40-degree dipping shale-sand-shale trap at 2,000 m with an oil-water
+    contact, water injected downdip into the water leg and oil produced
+    updip, over three years.
+  seed: 1
+
+domains:
+  # The cell size is set by the dip, not by the seismic. A bed of thickness
+  # `gross` dipping at `theta` drops dx*tan(theta) per lateral cell, so
+  # adjacent columns of sand only overlap by gross - dx*tan(theta). At 40
+  # degrees and dx = 20 m that overlap is 3 m against a 20 m bed, and on a
+  # 5 m vertical grid a third of the column pairs then share no cell at
+  # all: the reservoir becomes a disconnected staircase, the wells lose
+  # pressure communication, and the material balance still closes while the
+  # answer is wrong. dx = 10 m and dz = 4 m leave ~3 cells of overlap.
+  #
+  # 1,000 m of dip length carries 839 m of relief, so the sand runs from
+  # 1,580 m updip to 2,420 m downdip.
+  geology_bounds: [[0, 1000], [0, 600], [0, 2900]]
+  geology_spacing: [10.0, 30.0, 4.0]
+  propagation_bounds: [[60, 940], [60, 540], [500, 2800]]
+  propagation_spacing: [10.0, 20.0, 10.0]
+  # The target brackets the sand across its whole dip range.
+  target_bounds: [[120, 880], [120, 480], [1500, 2500]]
+
+geology:
+  template: three_layer
+  parameters:
+    extent: [1000.0, 600.0, 2900.0]
+    z_reservoir: 2000.0
+    gross: 20.0
+    dip: 40.0
+    azimuth: 90.0        # dips towards +x, so +x is downdip
+    seed: 1
+
+# One global dry frame makes the shale slower than the reservoir sand and
+# leaves the top of the sand with almost no impedance contrast. A stiff
+# frame for the shale restores it.
+rock_physics:
+  dry_frame_model: soft_sand
+  critical_porosity: 0.40
+  coordination: 9.0
+  temperature: 85.0
+  facies:
+    shale:
+      dry_frame_model: stiff_sand
+      critical_porosity: 0.55
+      coordination: 6.0
+
+reservoir:
+  source: flow
+  baseline:
+    sw: 0.18           # irreducible water in the oil column
+    temperature: 85.0
+    pressure_gradient: 10500.0
+    datum_pressure: 101325.0
+    owc: 2050.0        # cuts the sand at x = 560 m
+    transition: 15.0   # a thin capillary transition, not a sharp step
+
+wells:
+  wells:
+    # Updip, in the oil leg: sand at 1,748-1,768 m here.
+    - name: P1
+      role: producer
+      x: 200.0
+      y: 300.0
+      completions: [reservoir]
+      control: liquid_rate
+      target: 2250.0          # STB/day, the tool's pattern-scale suggestion
+      bhp_limit_psi: 1100.0
+    # Downdip, in the water leg: sand at 2,252-2,272 m here.
+    - name: I1
+      role: injector
+      x: 800.0
+      y: 300.0
+      completions: [reservoir]
+      control: water_rate
+      target: 2200.0          # STB/day, VRR 0.98
+      bhp_limit_psi: 4000.0   # above the 3,445 psi at its own sand depth
+
+simulation:
+  duration_days: 1095.0      # three years
+  report_every_days: 45.625
+  max_timestep_days: 30.0
+  monitor_day: 1095.0
+  swc: 0.18
+  sor: 0.25
+  krw_max: 0.35
+  kro_max: 0.90
+  water_viscosity_cp: 0.45
+  oil_viscosity_cp: 1.1
+  gravity: true
+
+source:
+  type: ormsby
+  corners: [6.0, 12.0, 40.0, 55.0]
+
+sim2seis:
+  map_to_depth: true
+  time_shifts: true
+  noise:
+    level: 0.06
+    repeatability: 0.7
+    seed: 11
+
+fourd:
+  scenarios: [baseline, pressure_only, saturation_only, combined]

@@ -168,14 +168,26 @@ def test_a_thinner_completion_gets_a_smaller_rate(dipping):
 
 
 def test_an_injector_is_capped_at_the_fracture_gradient(dipping):
+    """At the depth the well is completed, not the middle of the grid.
+
+    The two coincide only when the reservoir happens to sit at mid-grid. On
+    a dipping structure a downdip injector is far below it, and capping at
+    the mid-grid pressure can put the limit *under* the local reservoir
+    pressure - a well that cannot inject at all, from a number nobody
+    chose. This test previously asserted the mid-grid version, which is how
+    that survived.
+    """
+    from sim3d.wells.controls import FRACTURE_GRADIENT, _completion_depth
     wells = WellSet([Well("I1", "injector", 1500.0, 1500.0, (1200.0, 1350.0)),
                      Well("P1", "producer", 2000.0, 1500.0, (1200.0, 1350.0))])
     control = suggest_control(wells[0], dipping,
                               default_completions(wells[0], dipping),
                               list(wells), 1.3e7)
-    depth = 0.5 * sum(dipping.grid.bounds[2])
-    from sim3d.wells.controls import FRACTURE_GRADIENT
+    depth = _completion_depth(wells[0], dipping)
     assert control.bhp_limit <= FRACTURE_GRADIENT * depth * 1.000001
+    # And it must still be able to inject: a cap below reservoir pressure
+    # is a well that does nothing while looking configured.
+    assert control.bhp_limit > 1.3e7
 
 
 def test_schedules_open_and_close_wells():

@@ -168,7 +168,8 @@ def stacked_sands(extent=(3000.0, 3000.0, 2200.0), z_reservoir=1200.0,
 
 
 def three_layer(extent=(3000.0, 3000.0, 2200.0), z_reservoir=1200.0,
-                gross=150.0, seed=1, heterogeneous=True):
+                gross=150.0, seed=1, heterogeneous=True, dip=0.0,
+                azimuth=90.0):
     """Template H: shale, sand, shale, and nothing else.
 
     The textbook 4D case.  Every other template carries a layered
@@ -178,8 +179,25 @@ def three_layer(extent=(3000.0, 3000.0, 2200.0), z_reservoir=1200.0,
     nowhere to hide.  That makes it the right model for comparing what two
     seismic modes do with the *same* change, and the wrong one for judging
     how either behaves under a realistic overburden.
+
+    ``dip`` tilts the whole package about the model centre, which is what
+    turns it into a structural trap: the sand climbs updip, a contact cuts
+    across it at one depth, and an injector downdip can sit in the water
+    leg while a producer updip sits in oil.  The overburden dips with the
+    sand - tilting only the reservoir would drive it up through a flat
+    seal, which is a crossing horizon rather than a structure.
+
+    The two shales are semi-infinite, extending to the top and base of the
+    model rather than being finite beds.  A three-layer *seismic* model
+    means one sand between two half-spaces: giving the shales their own
+    outer boundaries would add two more reflectors and stop the response
+    being the sand's alone.
     """
-    sand = _reservoir(Flat(z_reservoir), gross, seed)
+    tilt = Relief(Dipping(0.0, dip=dip, azimuth=azimuth,
+                          origin=(extent[0] / 2, extent[1] / 2))) if dip else None
+    top = Flat(z_reservoir) + tilt if tilt else Flat(z_reservoir)
+    base = Flat(z_reservoir + gross) + tilt if tilt else Flat(z_reservoir + gross)
+    sand = _reservoir(top, gross, seed)
     if not heterogeneous:
         sand.porosity_heterogeneity = None
         sand.vsh_heterogeneity = None
@@ -188,8 +206,7 @@ def three_layer(extent=(3000.0, 3000.0, 2200.0), z_reservoir=1200.0,
     return [
         Layer("overburden_shale", Flat(0.0), "shale", porosity=0.16, vsh=0.88),
         sand,
-        Layer("underburden_shale", Flat(z_reservoir + gross), "shale",
-              porosity=0.13, vsh=0.90),
+        Layer("underburden_shale", base, "shale", porosity=0.13, vsh=0.90),
     ], FaultSet([])
 
 

@@ -66,6 +66,64 @@ class QCResult:
         return self.report()
 
 
+def check_layer_connectivity(geology, result: QCResult | None = None,
+                             minimum_cells: int = 2) -> QCResult:
+    """Check a dipping reservoir is still laterally connected on this grid.
+
+    A bed of thickness ``g`` dipping at ``theta`` drops ``dx tan(theta)``
+    per lateral cell, so two adjacent columns of it overlap by only
+    ``g - dx tan(theta)``.  Once that is smaller than a cell the reservoir
+    stops being a layer and becomes a staircase of disconnected blocks:
+    wells lose pressure communication, rates collapse against their BHP
+    limits, and *the material balance still closes*, because nothing is
+    conserved incorrectly - the fluid simply has nowhere to go.
+
+    That combination is what makes it worth a check.  Every other symptom
+    looks like a badly chosen rate.
+    """
+    result = result or QCResult()
+    mask = np.asarray(geology.reservoir_mask, dtype=bool)
+    if not mask.any():
+        result.add(Status.WARNING, "no reservoir cells: nothing to connect")
+        return result
+
+    worst = None
+    for axis in (0, 1):
+        a = np.moveaxis(mask, axis, 0)
+        lower, upper = a[:-1], a[1:]
+        both = lower.any(axis=-1) & upper.any(axis=-1)
+        if not both.any():
+            continue
+        shared = (lower & upper).sum(axis=-1)[both]
+        broken = int((shared == 0).sum())
+        pairs = int(both.sum())
+        name = "xy"[axis]
+        if worst is None or broken > worst[1]:
+            worst = (name, broken, pairs, int(shared.min()), float(np.median(shared)))
+
+    if worst is None:
+        result.add(Status.PASS, "reservoir occupies a single column; "
+                                "lateral connectivity does not apply")
+        return result
+    name, broken, pairs, smallest, median = worst
+    if broken:
+        status = Status.FAIL
+        verdict = (f"reservoir is laterally disconnected along {name}: "
+                   f"{broken} of {pairs} adjacent column pairs share no cell")
+    elif smallest < minimum_cells:
+        status = Status.WARNING
+        verdict = (f"reservoir is thinly connected along {name}: the weakest "
+                   f"of {pairs} adjacent column pairs shares {smallest} cell(s)")
+    else:
+        status = Status.PASS
+        verdict = (f"reservoir is laterally connected along {name}: every one "
+                   f"of {pairs} adjacent column pairs shares at least "
+                   f"{smallest} cells")
+    result.add(status, verdict + f" (median {median:.0f}). A dipping bed needs "
+                                 f"dx*tan(dip) well under its thickness.")
+    return result
+
+
 def check_state(state, result: QCResult | None = None) -> QCResult:
     """Petrophysical checks on a reservoir state."""
     result = result or QCResult()
