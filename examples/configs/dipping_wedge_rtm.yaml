@@ -130,7 +130,7 @@ acquisition:
   receiver_depth: 620.0
   source_depth: 600.0
   receiver_spacing: 40.0
-  source_spacing: 120.0
+  source_spacing: 260.0
 
 # A migration on this model is grid-bound, not bandwidth-bound. The
 # propagation grid is 10 m and the slowest cell in it is 2,024 m/s, so an

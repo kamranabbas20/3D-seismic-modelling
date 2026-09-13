@@ -394,3 +394,32 @@ def test_fold_is_drawn_on_the_sequential_ramp():
     # Plotly normalises the scale to tuples, so compare the colours.
     assert [c for _, c in figure.data[0].colorscale] == [c for _, c in theme.SEQUENTIAL]
     assert figure.layout.yaxis.scaleanchor == "x"
+
+
+def test_the_notebook_is_valid_and_every_code_cell_parses():
+    """A hand-written .ipynb is JSON that nobody type-checks.
+
+    The notebook reproduces the whole engine, so a stale API call in it is a
+    broken tutorial that no other test would catch - the package imports
+    fine, the app runs fine, and the notebook is the only thing wrong.
+    """
+    import ast
+    import json
+    import pathlib
+
+    path = (pathlib.Path(__file__).resolve().parent.parent
+            / "notebooks" / "sim3d_end_to_end.ipynb")
+    if not path.exists():
+        pytest.skip("no notebook shipped")
+    notebook = json.loads(path.read_text(encoding="utf-8"))
+    assert notebook["nbformat"] >= 4
+    code = [c for c in notebook["cells"] if c["cell_type"] == "code"]
+    assert len(code) > 10, "the notebook should cover the whole chain"
+    for i, cell in enumerate(code):
+        source = "".join(cell["source"])
+        try:
+            ast.parse(source)
+        except SyntaxError as exc:            # pragma: no cover - the failure path
+            raise AssertionError(f"code cell {i} does not parse: {exc}") from exc
+    assert not any(c.get("outputs") for c in code), \
+        "ship the notebook without stored outputs: they bloat the diff and go stale"
