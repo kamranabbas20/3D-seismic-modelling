@@ -468,6 +468,25 @@ def _survey_diagnostics(pipe, cfg, acquisition) -> None:
                "all. Aperture and standoff were what mattered.")
 
 
+def _show_checks(result, seen: set[str] | None = None) -> set[str]:
+    """Render QC checks and return their messages.
+
+    Deduplicating by message rather than by position: the full QC repeats the
+    geometry checks, and which end of the list they land on is an ordering
+    detail this page should not depend on.
+    """
+    seen = seen or set()
+    for check in result.checks:
+        if check.message in seen:
+            continue
+        seen.add(check.message)
+        icon = {"PASS": "✅", "WARNING": "⚠️", "FAIL": "❌"}[check.status.value]
+        (st.error if check.status is Status.FAIL else
+         st.warning if check.status is Status.WARNING else st.success)(
+            f"{icon} {check.message}")
+    return seen
+
+
 def page_acquisition() -> None:
     pipe = pipeline()
     cfg = config()
@@ -522,34 +541,44 @@ def page_acquisition() -> None:
                "to ask.")
 
     st.subheader("Model QC")
-    result = stage("Running QC", pipe.qc)
-    failures = [c for c in result.checks if c.status is Status.FAIL]
-    for check in result.checks:
-        icon = {"PASS": "✅", "WARNING": "⚠️", "FAIL": "❌"}[check.status.value]
-        (st.error if check.status is Status.FAIL else
-         st.warning if check.status is Status.WARNING else st.success)(
-            f"{icon} {check.message}")
-    if failures:
-        st.error("QC failed. sim3d will not adjust the grid, the bandwidth or "
-                 "the geometry for you — change the configuration.")
+    # Geometry first and always: it costs nothing.  The dispersion and
+    # stability checks need the propagation models, which pull the flow
+    # simulation and the rock physics in behind them, so they wait to be
+    # asked - a survey is designed before a reservoir is simulated.
+    shown = _show_checks(pipe.geometry_qc())
+    if pipe.result.qc is not None or st.button("Run the full model QC"):
+        result = stage("Running QC", pipe.qc)
+        _show_checks(result, seen=shown)
+        if result.failed:
+            st.error("QC failed. sim3d will not adjust the grid, the bandwidth "
+                     "or the geometry for you — change the configuration.")
 
-    st.subheader("Computational estimate")
-    try:
-        estimate = pipe.plan()
-        st.code(estimate.describe(), language="text")
-        st.success("Within the configured budget.")
-    except Sim3DError as exc:
-        st.error(str(exc))
+        st.subheader("Computational estimate")
+        try:
+            st.code(pipe.plan().describe(), language="text")
+            st.success("Within the configured budget.")
+        except Sim3DError as exc:
+            st.error(str(exc))
+    else:
+        st.info("The dispersion, stability and state checks need the flow "
+                "simulation and the rock physics — minutes, not seconds.")
 
 
 def page_simulation() -> None:
     pipe = pipeline()
     st.title("Simulation & imaging")
-    qc = stage("Running QC", pipe.qc)
-    blocked = qc.failed
+    # Only an already-computed QC blocks the buttons: running it here would
+    # make merely opening the page cost a flow simulation.  Nothing unchecked
+    # gets modelled regardless, because the run itself calls pipe.qc first.
+    blocked = pipe.result.qc is not None and pipe.result.qc.failed
     if blocked:
         st.error("QC has failed for this configuration — see **Acquisition & QC**. "
                  "Fix it before modelling.")
+    geometry = pipe.geometry_qc()
+    if geometry.failed:
+        st.error("The acquisition geometry does not fit the propagation domain "
+                 "— see **Acquisition & QC**.")
+        blocked = True
 
     a, b = st.columns(2)
     if a.button("Run full-wave simulation", type="primary", disabled=blocked):
@@ -561,6 +590,11 @@ def page_simulation() -> None:
             progress.progress(min(total["n"] / (count * 4), 1.0),
                               text=f"{name}: shot {done} of {count}")
         try:
+            if stage("Running QC", pipe.qc).failed:
+                raise Sim3DError(
+                    "QC failed for this configuration — see Acquisition & QC. "
+                    "sim3d will not adjust the grid, the bandwidth or the "
+                    "geometry for you.")
             pipe.simulate(progress=report)
         except Sim3DError as exc:
             st.error(str(exc))

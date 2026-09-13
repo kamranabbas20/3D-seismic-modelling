@@ -378,6 +378,20 @@ class Pipeline:
             self.result.acquisition = acq
         return self.result.acquisition
 
+    def geometry_qc(self) -> QCResult:
+        """The checks that need only the survey and the grid.
+
+        Full QC pulls the flow simulation and the rock physics in behind it,
+        because it checks dispersion and stability on the propagation models.
+        Whether the geometry fits inside the domain is a separate question
+        with a separate cost, and the page that designs a survey should not
+        have to run a reservoir simulation to answer it.
+        """
+        result = QCResult()
+        check_geometry(self.acquisition(), self.domains.propagation,
+                       self.config.solver.pml_nodes, result)
+        return result
+
     def qc(self) -> QCResult:
         if self.result.qc is None:
             models, dt = self.propagation_models()

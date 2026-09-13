@@ -107,6 +107,32 @@ def test_qc_reports_on_every_scenario(pipeline):
         assert f"[{name}]" in report
 
 
+def test_the_geometry_qc_costs_no_flow_simulation():
+    """The acquisition page renders these on load, so they must be free.
+
+    Full QC checks dispersion and stability on the propagation models, which
+    pulls the flow simulation and the rock physics in behind it - minutes on
+    a real configuration. Whether the survey fits inside the domain is a
+    separate question, and a survey is designed before a reservoir is run.
+
+    A fresh pipeline, not the shared fixture: the claim is about what this
+    call computes, which is unobservable on one that has already run.
+    """
+    pipeline = Pipeline(tiny_config())
+    result = pipeline.geometry_qc()
+    assert result.checks                      # it does check something
+    assert pipeline.result.states is None     # and it cost nothing to do it
+    assert pipeline.result.earth is None
+    assert pipeline.result.qc is None         # nor did it pre-empt the full run
+
+
+def test_the_geometry_checks_are_a_subset_of_the_full_qc(pipeline):
+    """The page shows the cheap ones first and dedupes the rest by message,
+    which only works while the full result really does contain them."""
+    cheap = {c.message for c in pipeline.geometry_qc().checks}
+    assert cheap <= {c.message for c in pipeline.qc().checks}
+
+
 def test_the_cost_estimate_counts_every_scenario(pipeline):
     estimate = pipeline.plan()
     assert estimate.n_scenarios == 4
