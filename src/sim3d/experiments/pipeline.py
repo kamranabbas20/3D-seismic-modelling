@@ -429,7 +429,20 @@ class Pipeline:
     def _interior_width(self) -> float:
         """Widest centred survey the propagation domain's interior allows."""
         grid = self.domains.propagation
-        interior = grid.padded(-self.config.solver.pml_nodes)
+        pml = self.config.solver.pml_nodes
+        try:
+            interior = grid.padded(-pml)
+        except ConfigError as exc:
+            # Name the real problem. Without this the user gets a grid error
+            # about node counts from three frames down, which says nothing
+            # about the absorbing layer being wider than the domain.
+            raise ConfigError(
+                f"the propagation domain {grid.shape} has no interior left "
+                f"after a {pml}-node absorbing layer on each face: the layer "
+                f"needs {2 * pml} nodes per axis and an axis here has fewer. "
+                f"Widen propagation_bounds, coarsen propagation_spacing, or "
+                f"reduce solver.pml_nodes."
+            ) from exc
         (ix0, ix1), (iy0, iy1), _ = interior.bounds
         a = self.config.acquisition
         cx, cy = (tuple(a.centre) if a.centre else

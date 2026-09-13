@@ -542,3 +542,15 @@ def test_every_shipped_configuration_covers_its_target():
     for path in sorted(pathlib.Path("examples/configs").glob("*.yaml")):
         check = _coverage(ExperimentConfig.load(path))
         assert check.status is Status.PASS, f"{path.name}: {check.message}"
+
+
+def test_a_domain_too_small_for_its_absorbing_layer_says_so():
+    """Without this the user gets a grid error about node counts from three
+    frames down, which says nothing about the absorbing layer being wider
+    than the domain it is supposed to sit inside."""
+    config = tiny_config()
+    config.domains.propagation_bounds = [[100, 1100], [380, 820], [400, 1400]]
+    config.solver.pml_nodes = 12
+    config.acquisition.receiver_extent = None
+    with pytest.raises(ConfigError, match="no interior left"):
+        Pipeline(config).acquisition()
