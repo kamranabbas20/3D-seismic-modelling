@@ -162,6 +162,46 @@ threshold on trace amplitude picks up a small edge-of-model artefact at
 x = 0 before it reaches the front, which is why the table counts affected
 traces rather than quoting an edge position.
 
+## The migration
+
+It ran: 9 shots per survey, two surveys, on the isotropic 10 m grid at a
+16 Hz Ricker.
+
+| | |
+|---|---|
+| forward | 1,272 s |
+| imaging | 2,835 s |
+| total | ~68 min on an idle 4-core machine |
+| memory | 3.56 GB, flat across all 18 shots |
+| RTM 4D NRMS | 8.96 % |
+
+![the migrated 4D difference](figures/wedge-32_rtm_4d.png)
+
+![the migrated section](figures/wedge-33_rtm_section.png)
+
+**The dipping reflector is in the right place.** That is the whole reason to
+pay for a migration here: the 1D convolution mispositions a 40-degree dip by
+construction, and the migrated inline puts the 4D anomaly along the sand
+where the flow simulation says the flood is, terminating updip near
+x = 500 m rather than smeared across the section.
+
+**The artefacts are large and worth naming.** Sources sit at 600 m and
+receivers at 620 m, which is 100 m below the top of the propagation domain
+and immediately inside the absorbing layer's inner edge, so the top of every
+image carries strong near-field ringing. The right-hand edge carries the
+same from the domain boundary. With 9 shots the illumination of a
+40-degree dip is sparse, and the QC said so before the run: the survey
+clears the target by 90 m on its narrowest edge, under the 100 m the check
+wants.
+
+**On the 8.96 %.** It is not comparable with the 23.15 % the sim2seis near
+stack reports, because the two are measured over different volumes: the
+migrated image spans the whole propagation domain, most of which is barren
+overburden with no 4D change at all, and a whole-volume NRMS is diluted by
+exactly that. This project has the lesson already - *NRMS depends entirely
+on where you measure it* - and the honest comparison is in a reservoir
+window, which is work still to do.
+
 ## What was not run
 
 The migrated image. The acquisition is defined and passes QC — 30 sources,
