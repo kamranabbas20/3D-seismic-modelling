@@ -31,7 +31,7 @@ import streamlit as st
 # imported normally, which is why everything below it can stay relative.
 from sim3d.core.config import ExperimentConfig
 from sim3d.core.errors import Sim3DError
-from sim3d.geology.bodies import BODY_TYPES
+from sim3d.geology.bodies import BODY_TYPES, GeoBody
 from sim3d.geology.facies import FACIES
 from sim3d.core.graph import explain as explain_dependencies
 from sim3d.core.units import PSI, pa_to_psi, psi_to_pa, si_to_stb_per_day
@@ -266,6 +266,8 @@ def page_geology() -> None:
         }
         for i, layer in enumerate(geology.layers)
     }, width="stretch")
+    with left:
+        _layer_properties(geology)
     right.subheader("Faults")
     right.code(geology.faults.describe(), language="text")
     right.caption("Faults are kinematic: they displace the stratigraphy and "
@@ -273,6 +275,86 @@ def page_geology() -> None:
                   "stress.")
 
     _geobody_editor(pipe, geology)
+
+
+def layer_overrides() -> list[dict]:
+    """The per-layer override list, straight off the configuration."""
+    return config().geology.layers
+
+
+def _layer_properties(geology) -> None:
+    """Edit one layer's petrophysics without writing a new template.
+
+    The template fixes a plausible earth; this is how an experiment asks a
+    different question of it - a tighter seal, a cleaner reservoir - and it
+    changes the property cube the flow simulation and the rock physics both
+    read, so the edit reaches the sweep and the seismic.
+    """
+    with st.expander("Petrophysics by layer"):
+        names = [layer.name for layer in geology.layers]
+        chosen = st.selectbox("Layer", names, key="layer_edit")
+        layer = next(l for l in geology.layers if l.name == chosen)
+        facies = layer.resolved_facies()
+        overrides = layer_overrides()
+        current = next((e for e in overrides if e.get("name") == chosen), {})
+
+        mid = lambda pair: 0.5 * (pair[0] + pair[1])           # noqa: E731
+        st.caption(f"Facies **{layer.facies}** supplies porosity "
+                   f"{mid(facies.porosity):.2f}, Vsh {mid(facies.vsh):.2f}, "
+                   f"NTG {mid(facies.ntg):.2f}, "
+                   f"{mid(facies.permeability):,.0f} mD. An unset field takes "
+                   f"that midpoint; permeability unset is derived from "
+                   f"porosity rather than held constant.")
+
+        a, b = st.columns(2)
+        new_facies = a.selectbox(
+            "Facies", list(FACIES), index=list(FACIES).index(layer.facies),
+            key=f"facies_{chosen}")
+        reservoir = b.checkbox(
+            "Is reservoir", value=bool(layer.is_reservoir
+                                       if layer.is_reservoir is not None
+                                       else facies.is_reservoir),
+            key=f"resv_{chosen}",
+            help="Whether the flow simulation solves in this unit at all.")
+
+        c, d, e, f = st.columns(4)
+        values = {
+            "porosity": c.number_input(
+                "Porosity", 0.0, 0.6,
+                float(layer.porosity if layer.porosity is not None
+                      else mid(facies.porosity)), 0.01, key=f"phi_{chosen}"),
+            "vsh": d.number_input(
+                "Shale volume", 0.0, 1.0,
+                float(layer.vsh if layer.vsh is not None else mid(facies.vsh)),
+                0.01, key=f"vsh_{chosen}"),
+            "ntg": e.number_input(
+                "Net-to-gross", 0.0, 1.0,
+                float(layer.ntg if layer.ntg is not None else mid(facies.ntg)),
+                0.01, key=f"ntg_{chosen}"),
+            "permeability": f.number_input(
+                "Permeability (mD)", 0.0, 20000.0,
+                float(layer.permeability if layer.permeability is not None
+                      else mid(facies.permeability)), 10.0, key=f"k_{chosen}"),
+        }
+
+        apply, reset = st.columns(2)
+        if apply.button("Apply to layer", type="primary", key=f"apply_{chosen}"):
+            entry = {"name": chosen, "facies": new_facies,
+                     "is_reservoir": bool(reservoir), **values}
+            overrides[:] = [o for o in overrides if o.get("name") != chosen]
+            overrides.append(entry)
+            invalidate()
+            st.rerun()
+        if reset.button("Back to the template", key=f"reset_{chosen}",
+                        disabled=not current):
+            overrides[:] = [o for o in overrides if o.get("name") != chosen]
+            invalidate()
+            st.rerun()
+
+        if overrides:
+            st.caption("Overridden: "
+                       + ", ".join(sorted(o["name"] for o in overrides))
+                       + ". Everything else is the template.")
 
 
 def body_specs() -> list[dict]:
@@ -334,6 +416,35 @@ def _geobody_editor(pipe, geology) -> None:
                                    float(z1 - z0), 40.0, 10.0)
         name = g.text_input("Name", _unique_body_name(kind))
 
+        # The facies fixes a default for each property; these let a body be
+        # something the catalogue does not contain - a tight streak, an
+        # unusually clean bar - without inventing a facies to hold it.
+        rock = GeoBody(name=name, type=kind, path=[[0.0, 0.0], [1.0, 1.0]],
+                       facies=facies_name).rock()
+        override = st.checkbox(
+            "Set properties explicitly", key="body_override",
+            help=f"Otherwise {facies_name} supplies them: porosity "
+                 f"{rock['porosity']:.2f}, Vsh {rock['vsh']:.2f}, NTG "
+                 f"{rock['ntg']:.2f}, {rock['permeability_md']:,.0f} mD.")
+        properties = {}
+        if override:
+            h, i, j, k = st.columns(4)
+            properties = {
+                "porosity": h.number_input("Porosity", 0.0, 0.6,
+                                           float(rock["porosity"]), 0.01),
+                "vsh": i.number_input("Shale volume", 0.0, 1.0,
+                                      float(rock["vsh"]), 0.01),
+                "ntg": j.number_input("Net-to-gross", 0.0, 1.0,
+                                      float(rock["ntg"]), 0.01),
+                "permeability_md": k.number_input(
+                    "Permeability (mD)", 0.0, 20000.0,
+                    float(rock["permeability_md"]), 10.0),
+            }
+            st.caption("Permeability drives the flow and porosity drives both "
+                       "the flow and the rock physics, so these change the "
+                       "sweep and the seismic together — they are not a "
+                       "display setting.")
+
         place, clear, undo = st.columns(3)
         if place.button("Place body", type="primary",
                         disabled=len(path) < need):
@@ -343,7 +454,7 @@ def _geobody_editor(pipe, geology) -> None:
                 specs.append({"name": name, "type": kind, "path": list(path),
                               "width": float(width), "top": float(top),
                               "thickness": float(thickness),
-                              "facies": facies_name})
+                              "facies": facies_name, **properties})
                 st.session_state.body_path = []
                 # Drop the shared cursor onto the body: it is almost always
                 # thinner than the reservoir, so a slice left where it was
@@ -363,15 +474,27 @@ def _geobody_editor(pipe, geology) -> None:
         st.info("No drawn bodies. The geology is the template alone.")
         return
 
-    st.dataframe({
-        b["name"]: {"type": b.get("type", "channel"),
-                    "facies": b.get("facies", "clean_sandstone"),
-                    "points": len(b.get("path", [])),
-                    "width (m)": b.get("width", 0.0),
-                    "top (m)": b.get("top", 0.0),
-                    "thickness (m)": b.get("thickness", 0.0)}
-        for b in specs
-    }, width="stretch")
+    def row(b: dict) -> dict:
+        # Show what the body will actually be made of, resolving the facies
+        # defaults: a table of blanks for everything unset would hide the
+        # difference between two bodies of the same facies.
+        rock = GeoBody(**b).rock()
+        explicit = {k for k in ("porosity", "vsh", "ntg", "permeability_md")
+                    if b.get(k) is not None}
+        mark = lambda k, v: f"{v}*" if k in explicit else v   # noqa: E731
+        return {
+            "type": b.get("type", "channel"),
+            "facies": b.get("facies", "clean_sandstone"),
+            "points": len(b.get("path", [])),
+            "width (m)": f"{b.get('width', 0.0):,.0f}",
+            "top (m)": f"{b.get('top', 0.0):,.0f}",
+            "thickness (m)": f"{b.get('thickness', 0.0):,.0f}",
+            "porosity": mark("porosity", f"{rock['porosity']:.2f}"),
+            "perm (mD)": mark("permeability_md", f"{rock['permeability_md']:,.0f}"),
+        }
+
+    st.dataframe({b["name"]: row(b) for b in specs}, width="stretch")
+    st.caption(r"\* set explicitly; everything else is the facies default.")
     remove = st.selectbox("Remove a body", [b["name"] for b in specs],
                           key="remove_body")
     if st.button("Remove"):

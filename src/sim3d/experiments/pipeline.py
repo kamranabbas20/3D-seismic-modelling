@@ -37,7 +37,9 @@ from ..fourd.scenarios import (
     SCENARIO_NAMES, build_earth_models, build_states, build_states_from_flow,
 )
 from ..geology.bodies import apply_bodies, build_bodies
-from ..geology.builder import GeologyModel, build_geology
+from ..geology.builder import (
+    GeologyModel, build_geology, override_layers,
+)
 from ..geology.templates import template
 from ..imaging.rtm import RTMSettings, RTMResult, migrate_survey
 from ..processing.preview import convolution_preview, time_from_depth
@@ -156,6 +158,7 @@ class Pipeline:
         if self.result.geology is None:
             cfg = self.config.geology
             layers, faults = template(cfg.template, **cfg.parameters)
+            override_layers(layers, cfg.layers)
             bodies = build_bodies(cfg.bodies)
             self.result.geology = self._timed(
                 "geology", lambda: apply_bodies(
@@ -163,6 +166,10 @@ class Pipeline:
             self.result.notes.append(
                 f"geology: template '{cfg.template}' with {len(layers)} layers, "
                 f"{len(faults)} fault(s)")
+            self.result.notes += [
+                f"layer override: {e['name']} — "
+                + ", ".join(f"{k}={v}" for k, v in e.items() if k != "name")
+                for e in (cfg.layers or [])]
             # Painted before anything reads the property cube, so the flow
             # simulation sees the channel rather than the template it replaced.
             self.result.notes += [f"geobody: {b.describe()}" for b in bodies]

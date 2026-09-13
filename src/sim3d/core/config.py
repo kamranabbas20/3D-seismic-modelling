@@ -107,6 +107,9 @@ class DomainConfig:
 class GeologyConfig:
     template: str = "anticline"
     parameters: dict = field(default_factory=dict)
+    #: Per-layer petrophysical overrides, matched by layer name: a tighter
+    #: seal or a cleaner reservoir without writing a new template.
+    layers: list = field(default_factory=list)
     #: Hand-drawn geobodies painted over the template, in order.  They edit
     #: porosity, permeability, net-to-gross and the reservoir mask, so they
     #: reach the flow simulation and the seismic, not just the display.

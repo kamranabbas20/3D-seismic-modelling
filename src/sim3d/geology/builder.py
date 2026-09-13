@@ -259,3 +259,59 @@ def _sublayer_modulation(grid, top, base, z_restored, layer: Layer) -> np.ndarra
     return 0.5 * layer.sublayer_porosity_range * np.cos(
         2.0 * np.pi * layer.n_sublayers * fraction
     )
+
+
+#: Layer fields a configuration may override.  Heterogeneity, the top
+#: surface and the sub-layer structure stay with the template: they are the
+#: shape of the model, and editing them from a flat list of scalars would be
+#: a worse interface than writing a template.
+LAYER_OVERRIDES = ("facies", "porosity", "vsh", "ntg", "permeability",
+                   "is_reservoir")
+
+
+def override_layers(layers: list[Layer], overrides) -> list[Layer]:
+    """Apply per-layer petrophysical overrides from a configuration.
+
+    A template fixes a plausible earth; this is how an experiment asks a
+    different question of it - a tighter seal, a cleaner reservoir, a
+    higher net-to-gross - without writing a new template for every value.
+
+    Matching is by layer name and an unknown name is an error listing the
+    ones that exist: a typo that silently changed nothing would leave the
+    user comparing two runs that are in fact identical, which is the worst
+    failure this module can have.
+    """
+    from ..core.errors import ConfigError
+    from .facies import FACIES
+
+    if not overrides:
+        return layers
+    by_name = {layer.name: layer for layer in layers}
+    for i, entry in enumerate(overrides):
+        if not isinstance(entry, dict):
+            raise ConfigError(
+                f"geology.layers[{i}] must be a mapping of settings, got "
+                f"{type(entry).__name__}")
+        name = entry.get("name")
+        if name is None:
+            raise ConfigError(
+                f"geology.layers[{i}] needs a 'name' saying which layer it "
+                f"overrides; this template has {sorted(by_name)}")
+        if name not in by_name:
+            raise ConfigError(
+                f"geology.layers[{i}] names layer {name!r}, which template "
+                f"has no layer called; its layers are {sorted(by_name)}")
+        unknown = set(entry) - {"name", *LAYER_OVERRIDES}
+        if unknown:
+            raise ConfigError(
+                f"unknown key(s) {sorted(unknown)} in geology.layers[{i}]; "
+                f"overridable keys are {sorted(LAYER_OVERRIDES)}")
+        if "facies" in entry and entry["facies"] not in FACIES:
+            raise ConfigError(
+                f"geology.layers[{i}] asks for facies {entry['facies']!r}; "
+                f"the catalogue has {sorted(FACIES)}")
+        layer = by_name[name]
+        for key in LAYER_OVERRIDES:
+            if key in entry:
+                setattr(layer, key, entry[key])
+    return layers

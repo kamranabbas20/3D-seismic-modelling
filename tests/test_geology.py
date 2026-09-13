@@ -274,3 +274,100 @@ def test_the_three_layer_template_can_drop_its_heterogeneity():
     assert sand.porosity_heterogeneity is None
     assert sand.vsh_heterogeneity is None
     assert sand.n_sublayers == 1
+
+
+# --------------------------------------------------- per-layer petrophysics
+def _three_layer():
+    from sim3d.geology.templates import template
+    return template("three_layer", extent=(2000.0, 2000.0, 1800.0),
+                    z_reservoir=1200.0, gross=150.0)
+
+
+def test_a_layer_override_reaches_the_built_property_cube():
+    """The point of the feature: asking a different question of a template
+    without writing a new template, and having the simulator see it."""
+    from sim3d.core.grid import Grid3D
+    from sim3d.geology.builder import build_geology, override_layers
+
+    grid = Grid3D(origin=(0.0, 0.0, 0.0), spacing=(50.0, 50.0, 10.0),
+                  shape=(41, 41, 181))
+    layers, faults = _three_layer()
+    plain = build_geology(grid, layers, faults)
+    reservoir = plain.layer_index == [l.name for l in layers].index("reservoir")
+    before = float(plain.porosity[reservoir].mean())
+
+    layers, faults = _three_layer()
+    override_layers(layers, [{"name": "reservoir", "porosity": 0.31,
+                              "permeability": 1500.0}])
+    edited = build_geology(grid, layers, faults)
+    assert float(edited.porosity[reservoir].mean()) == pytest.approx(0.31, abs=0.02)
+    assert float(edited.porosity[reservoir].mean()) != pytest.approx(before, abs=1e-6)
+    assert float(edited.permeability_md[reservoir].mean()) == pytest.approx(
+        1500.0, rel=0.05)
+
+
+def test_only_the_named_layer_moves():
+    from sim3d.core.grid import Grid3D
+    from sim3d.geology.builder import build_geology, override_layers
+
+    grid = Grid3D(origin=(0.0, 0.0, 0.0), spacing=(50.0, 50.0, 10.0),
+                  shape=(21, 21, 181))
+    layers, faults = _three_layer()
+    plain = build_geology(grid, layers, faults)
+    layers, faults = _three_layer()
+    override_layers(layers, [{"name": "reservoir", "porosity": 0.31}])
+    edited = build_geology(grid, layers, faults)
+    elsewhere = plain.layer_index != [l.name for l in layers].index("reservoir")
+    assert np.array_equal(plain.porosity[elsewhere], edited.porosity[elsewhere])
+
+
+def test_a_misspelt_layer_name_is_an_error_listing_the_real_ones():
+    """A typo that silently changed nothing would leave two runs being
+    compared that are in fact identical - the worst failure available here."""
+    from sim3d.geology.builder import override_layers
+    layers, _ = _three_layer()
+    with pytest.raises(ConfigError, match="resevoir.*reservoir|reservoir"):
+        override_layers(layers, [{"name": "resevoir", "porosity": 0.3}])
+
+
+def test_an_override_without_a_name_says_which_layers_exist():
+    from sim3d.geology.builder import override_layers
+    layers, _ = _three_layer()
+    with pytest.raises(ConfigError, match="needs a 'name'"):
+        override_layers(layers, [{"porosity": 0.3}])
+
+
+def test_an_unknown_property_is_refused_not_ignored():
+    from sim3d.geology.builder import override_layers
+    layers, _ = _three_layer()
+    with pytest.raises(ConfigError, match="unknown key"):
+        override_layers(layers, [{"name": "reservoir", "porosoty": 0.3}])
+
+
+def test_an_unknown_facies_lists_the_catalogue():
+    from sim3d.geology.builder import override_layers
+    layers, _ = _three_layer()
+    with pytest.raises(ConfigError, match="clean_sandstone"):
+        override_layers(layers, [{"name": "reservoir", "facies": "granite"}])
+
+
+def test_a_layer_can_be_turned_into_a_seal():
+    """The override that matters most for a 4D experiment: a unit the flow
+    simulation stops solving in at all."""
+    from sim3d.geology.builder import override_layers
+    layers, _ = _three_layer()
+    override_layers(layers, [{"name": "reservoir", "is_reservoir": False}])
+    assert next(l for l in layers if l.name == "reservoir").is_reservoir is False
+
+
+def test_layer_overrides_reach_the_pipeline():
+    from sim3d.core.config import ExperimentConfig
+    from sim3d.experiments.pipeline import Pipeline
+    config = ExperimentConfig.load("examples/configs/three_layer_4d.yaml")
+    config.geology.layers = [{"name": "reservoir", "porosity": 0.31}]
+    pipeline = Pipeline(config)
+    geology = pipeline.geology()
+    index = [l.name for l in geology.layers].index("reservoir")
+    assert float(geology.porosity[geology.layer_index == index].mean()) == \
+        pytest.approx(0.31, abs=0.02)
+    assert any("layer override: reservoir" in n for n in pipeline.result.notes)
