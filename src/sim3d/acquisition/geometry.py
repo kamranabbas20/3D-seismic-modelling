@@ -216,8 +216,15 @@ class SamplingReport:
         return self.velocity / (4.0 * self.fmax * s)
 
     def factor(self, spacing: float) -> float:
-        """How many times coarser than the operator limit ``spacing`` is."""
+        """How many times coarser than the operator limit ``spacing`` is.
+
+        An infinite limit means nothing can alias, so the answer is 0; an
+        unknown one (no velocity yet) stays NaN rather than collapsing to 0,
+        which would read as perfectly sampled.
+        """
         limit = self.operator_limit
+        if np.isnan(limit):
+            return float("nan")
         return spacing / limit if np.isfinite(limit) and limit > 0 else 0.0
 
     def notes(self) -> list[str]:

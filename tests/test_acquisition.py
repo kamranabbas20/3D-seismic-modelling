@@ -126,3 +126,20 @@ def test_a_healthy_geometry_reports_nothing():
     r = sampling_report(_square_survey(1900.0), 1200.0, 2400.0, 28.8,
                         source_spacing=20.0, receiver_spacing=20.0)
     assert r.notes() == []
+
+
+def test_the_geometry_survives_an_unknown_velocity():
+    """Aperture and standoff are geometry; they must not need a rock physics run.
+
+    The acquisition page draws them before any flow simulation exists, so a
+    NaN velocity has to fall through to NaN wavelengths rather than raise or,
+    worse, report a comfortable 0x sampling factor.
+    """
+    from sim3d.acquisition.geometry import sampling_report
+    report = sampling_report(_square_survey(1900.0), 1200.0, float("nan"), 28.8,
+                             source_spacing=400.0, receiver_spacing=100.0)
+    assert report.aperture_deg > 0.0 and np.isfinite(report.standoff)
+    assert np.isnan(report.wavelength)
+    assert np.isnan(report.operator_limit)
+    assert np.isnan(report.factor(400.0))          # not 0.0: unknown, not fine
+    assert report.notes() == []                    # nothing evaluable to warn about

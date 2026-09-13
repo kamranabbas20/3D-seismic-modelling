@@ -40,7 +40,9 @@ from sim3d.ui import view3d
 from sim3d.wells.completion import layer_intersections, resolve_completions
 from sim3d.experiments.pipeline import Pipeline
 from sim3d.fourd.decomposition import nonlinearity_ratio
-from sim3d.acquisition.geometry import fold_map, sampling_report
+from sim3d.acquisition.geometry import (
+    azimuth_distribution, fold_map, offset_distribution, sampling_report,
+)
 from sim3d.imaging.rtm import IMAGING_CONDITIONS
 from sim3d.fourd.metrics import nrms, radial_profile
 from sim3d.fourd.scenarios import SCENARIO_NAMES
@@ -417,11 +419,11 @@ def _survey_diagnostics(pipe, cfg, acquisition) -> None:
     """
     (_, _), (_, _), (z_top, _) = pipe.domains.target.bounds
     earth = pipe.result.earth
-    if earth is None:
-        st.info("Run the rock physics to get the velocity-dependent numbers — "
-                "aperture, standoff in wavelengths and the sampling limits.")
-        return
-    velocity = float(np.median(earth.models["baseline"].vp))
+    # Aperture and standoff are geometry and are always available; only the
+    # wavelength and the operator limit need a velocity, and asking for a flow
+    # run before the survey can be judged has the design backwards.
+    velocity = (float(np.median(earth.models["baseline"].vp))
+                if earth is not None else float("nan"))
     report = sampling_report(acquisition, z_top, velocity, pipe.fmax,
                              cfg.acquisition.source_spacing,
                              cfg.acquisition.receiver_spacing)
@@ -435,23 +437,32 @@ def _survey_diagnostics(pipe, cfg, acquisition) -> None:
     b.metric("Standoff", f"{report.standoff:,.0f} m",
              help="Acquisition to target. Below about two wavelengths the "
                   "injection near-field overlaps the target.")
-    c.metric("…in wavelengths", f"{report.standoff_wavelengths:.1f} λ")
-    d.metric("Operator limit", f"{report.operator_limit:,.0f} m",
+    known = np.isfinite(report.wavelength)
+    c.metric("…in wavelengths",
+             f"{report.standoff_wavelengths:.1f} λ" if known else "—",
+             help=None if known else "Needs the rock physics for a velocity.")
+    d.metric("Operator limit",
+             f"{report.operator_limit:,.0f} m" if known else "—",
              help="V / (4 fmax sin θ): trace spacing that does not alias the "
-                  "migration operator at this aperture.")
+                  "migration operator at this aperture."
+                  + ("" if known else " Needs the rock physics for a velocity."))
 
     st.dataframe({
         "spacing (m)": {"sources": f"{report.source_spacing:,.0f}",
                         "receivers": f"{report.receiver_spacing:,.0f}"},
         "× the operator limit": {
-            "sources": f"{report.factor(report.source_spacing):.1f}×",
-            "receivers": f"{report.factor(report.receiver_spacing):.1f}×"},
+            "sources": f"{report.factor(report.source_spacing):.1f}×" if known else "—",
+            "receivers": f"{report.factor(report.receiver_spacing):.1f}×" if known else "—"},
     }, width="stretch")
 
     for note in report.notes():
         st.warning(note)
     if not report.notes():
-        st.success("Aperture, standoff and sampling are all within their limits.")
+        st.success("Aperture and standoff are within their limits."
+                   + (" Sampling too." if known else ""))
+    if not known:
+        st.info("Run the rock physics for the velocity-dependent numbers — "
+                "standoff in wavelengths and the sampling limits.")
     st.caption("Measured on this project: refining the receiver spacing alone, "
                "from 3.6× to 0.9× the limit, moved the reservoir image not at "
                "all. Aperture and standoff were what mattered.")
