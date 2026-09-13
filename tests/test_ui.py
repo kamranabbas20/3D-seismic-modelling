@@ -373,6 +373,19 @@ def test_the_aerial_view_can_hide_a_dense_receiver_carpet():
     assert len(with_rec.data) == len(without.data) + 1
 
 
+def test_every_well_is_named_on_a_readable_plate():
+    """Marker text over a receiver carpet is unreadable, so the names are
+    annotations with a background - and losing them to that change would
+    leave two identical dots with no way to tell injector from producer."""
+    from sim3d.wells.well import Well, WellSet
+    wells = WellSet([Well("I1", "injector", 400.0, 500.0),
+                     Well("P1", "producer", 900.0, 500.0)])
+    figure = ui.aerial_figure(wells=wells)
+    labelled = {a.text: a for a in figure.layout.annotations}
+    assert {"I1", "P1"} <= set(labelled)
+    assert all(a.bgcolor for a in labelled.values())
+
+
 def test_fold_is_drawn_on_the_sequential_ramp():
     """Fold is a count with no meaningful zero to diverge about."""
     fold = np.arange(25.0).reshape(5, 5)

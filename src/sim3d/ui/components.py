@@ -161,7 +161,7 @@ def map_figure(wells=None, acquisition=None, grid: Grid3D | None = None,
             fig.add_trace(go.Scatter(
                 x=[w.x for w in group], y=[w.y for w in group],
                 mode="markers+text", name=f"{role}s ({len(group)})",
-                text=[w.name for w in group], textposition="top center",
+                text=[f" {w.name} " for w in group], textposition="top center",
                 textfont=dict(color=theme.INK_SECONDARY, size=11),
                 marker=dict(symbol=theme.WELL_SYMBOL_2D[role], size=14,
                             color=theme.WELL_COLOUR[role],
@@ -201,8 +201,11 @@ def aerial_figure(acquisition=None, wells=None, domains=None, pml_nodes: int = 0
         (x0, x1), (y0, y1) = grid.bounds[0], grid.bounds[1]
         fig.add_shape(type="rect", x0=x0, x1=x1, y0=y0, y1=y1,
                       line=dict(color=colour, width=width, dash=dash))
+        # A plate behind the text: over a dense receiver carpet an unbacked
+        # label is unreadable, and the carpet is the normal case.
         fig.add_annotation(x=x0, y=y1, text=label, showarrow=False,
                            xanchor="left", yanchor="bottom",
+                           bgcolor=theme.LABEL_PLATE, borderpad=2,
                            font=dict(color=theme.INK_MUTED, size=10))
 
     if domains is not None:
@@ -234,14 +237,19 @@ def aerial_figure(acquisition=None, wells=None, domains=None, pml_nodes: int = 0
                 continue
             fig.add_trace(go.Scatter(
                 x=[w.x for w in group], y=[w.y for w in group],
-                mode="markers+text", name=role,
-                text=[w.name for w in group], textposition="top center",
-                textfont=dict(color=theme.INK_SECONDARY, size=11),
+                mode="markers", name=role,
                 marker=dict(size=13, color=theme.WELL_COLOUR[role],
                             symbol=theme.WELL_SYMBOL_2D[role],
                             line=dict(width=2, color=theme.SURFACE)),
                 hovertext=[f"{w.name} ({role})" for w in group],
                 hoverinfo="text"))
+            # Annotations rather than marker text, so the name gets the same
+            # plate the box labels do and stays readable over the receivers.
+            for w in group:
+                fig.add_annotation(x=w.x, y=w.y, text=w.name, showarrow=False,
+                                   yshift=13, yanchor="bottom",
+                                   bgcolor=theme.LABEL_PLATE, borderpad=2,
+                                   font=dict(color=theme.INK_SECONDARY, size=11))
 
     fig.update_layout(**theme.plotly_layout(
         height=height, margin=dict(l=60, r=20, t=44, b=48),

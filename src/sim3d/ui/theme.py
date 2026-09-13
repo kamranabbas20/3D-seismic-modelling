@@ -34,6 +34,8 @@ from ..core.units import PSI
 
 # --- surfaces and ink -----------------------------------------------------
 SURFACE = "#fcfcfb"
+#: Translucent surface, for label plates drawn over dense marker fields.
+LABEL_PLATE = "rgba(252, 252, 251, 0.78)"
 PAGE = "#f9f9f7"
 INK_PRIMARY = "#0b0b0b"
 INK_SECONDARY = "#52514e"
