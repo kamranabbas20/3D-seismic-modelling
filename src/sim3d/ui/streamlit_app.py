@@ -40,6 +40,8 @@ from sim3d.ui import view3d
 from sim3d.wells.completion import layer_intersections, resolve_completions
 from sim3d.experiments.pipeline import Pipeline
 from sim3d.fourd.decomposition import nonlinearity_ratio
+from sim3d.acquisition.geometry import fold_map, sampling_report
+from sim3d.imaging.rtm import IMAGING_CONDITIONS
 from sim3d.fourd.metrics import nrms, radial_profile
 from sim3d.fourd.scenarios import SCENARIO_NAMES
 from sim3d.ui import components as ui
@@ -404,23 +406,94 @@ def page_rockphysics() -> None:
                    "simply adding. Rock physics alone, at this stage.")
 
 
+def _survey_diagnostics(pipe, cfg, acquisition) -> None:
+    """Aperture, standoff and sampling, against the limits that matter.
+
+    These three numbers decide whether a migrated image is worth running:
+    too narrow an aperture gives arcs instead of reflectors, too small a
+    standoff lets the injection near-field sit on the target, and sampling
+    coarser than the operator limit leaves every shot's isochrone in the
+    image. All three were learned the expensive way on this project.
+    """
+    (_, _), (_, _), (z_top, _) = pipe.domains.target.bounds
+    earth = pipe.result.earth
+    if earth is None:
+        st.info("Run the rock physics to get the velocity-dependent numbers — "
+                "aperture, standoff in wavelengths and the sampling limits.")
+        return
+    velocity = float(np.median(earth.models["baseline"].vp))
+    report = sampling_report(acquisition, z_top, velocity, pipe.fmax,
+                             cfg.acquisition.source_spacing,
+                             cfg.acquisition.receiver_spacing)
+
+    st.markdown("**Survey diagnostics**")
+    a, b, c, d = st.columns(4)
+    a.metric("Max aperture", f"{report.aperture_deg:.0f}°",
+             help="Half-angle subtended at the top of the target by the "
+                  "furthest source or receiver, on the diagonal. Below about "
+                  "30 degrees a flat reflector images as arcs.")
+    b.metric("Standoff", f"{report.standoff:,.0f} m",
+             help="Acquisition to target. Below about two wavelengths the "
+                  "injection near-field overlaps the target.")
+    c.metric("…in wavelengths", f"{report.standoff_wavelengths:.1f} λ")
+    d.metric("Operator limit", f"{report.operator_limit:,.0f} m",
+             help="V / (4 fmax sin θ): trace spacing that does not alias the "
+                  "migration operator at this aperture.")
+
+    st.dataframe({
+        "spacing (m)": {"sources": f"{report.source_spacing:,.0f}",
+                        "receivers": f"{report.receiver_spacing:,.0f}"},
+        "× the operator limit": {
+            "sources": f"{report.factor(report.source_spacing):.1f}×",
+            "receivers": f"{report.factor(report.receiver_spacing):.1f}×"},
+    }, width="stretch")
+
+    for note in report.notes():
+        st.warning(note)
+    if not report.notes():
+        st.success("Aperture, standoff and sampling are all within their limits.")
+    st.caption("Measured on this project: refining the receiver spacing alone, "
+               "from 3.6× to 0.9× the limit, moved the reservoir image not at "
+               "all. Aperture and standoff were what mattered.")
+
+
 def page_acquisition() -> None:
     pipe = pipeline()
     cfg = config()
     st.title("Acquisition & QC")
 
     acquisition = stage("Building the geometry", pipe.acquisition)
-    st.markdown("**Sources, nodes, wells and the domain boundaries**")
-    st.plotly_chart(ui.map_figure(
-        wells=pipe.wells(), acquisition=acquisition,
-        grid=pipe.domains.propagation, pml_nodes=cfg.solver.pml_nodes),
-        width="stretch")
-    a, b, c = st.columns(3)
-    a.metric("Sources", f"{acquisition.n_sources:,}")
-    b.metric("Nodes", f"{acquisition.n_receivers:,}")
-    c.metric("Traces", f"{acquisition.n_traces:,}")
 
-    from sim3d.acquisition.geometry import azimuth_distribution, offset_distribution
+    st.subheader("Aerial view")
+    st.plotly_chart(ui.aerial_figure(
+        acquisition=acquisition, wells=pipe.wells(), domains=pipe.domains,
+        pml_nodes=cfg.solver.pml_nodes,
+        show_receivers=st.checkbox("show receivers", value=True,
+                                   key="aerial_receivers")), width="stretch")
+    st.caption("Drawn to scale — the axes share one. Whether the spread is wide "
+               "enough for the depth of the target is the question this view "
+               "exists to answer, and a stretched aspect ratio hides it.")
+
+    a, b, c, d = st.columns(4)
+    a.metric("Sources", f"{acquisition.n_sources:,}")
+    b.metric("Receivers", f"{acquisition.n_receivers:,}")
+    c.metric("Traces", f"{acquisition.n_traces:,}")
+    d.metric("Max offset", f"{acquisition.offsets().max():,.0f} m")
+
+    _survey_diagnostics(pipe, cfg, acquisition)
+
+    st.subheader("Common-midpoint fold")
+    bin_size = st.slider("bin size (m)", 25.0, 200.0, 50.0, 25.0, key="fold_bin")
+    (_, _), (_, _), (z_top, _) = pipe.domains.target.bounds
+    fx, fy, fold = fold_map(acquisition, pipe.domains.propagation, z_top,
+                            bin_size=float(bin_size))
+    st.plotly_chart(ui.fold_figure(fx, fy, fold, wells=pipe.wells()),
+                    width="stretch")
+    st.caption("Straight-ray midpoint counting at the top of the target. It is a "
+               "geometric proxy and says nothing about whether the wavefield "
+               "actually reaches the reservoir — that is what the modelling is for.")
+
+    st.subheader("Offset and azimuth")
     left, right = st.columns(2)
     centres, counts = offset_distribution(acquisition, 20)
     left.markdown("**Offset distribution**")
@@ -481,6 +554,59 @@ def page_simulation() -> None:
         except Sim3DError as exc:
             st.error(str(exc))
         progress.empty()
+    with st.expander("Imaging settings", expanded=not pipe.result.images):
+        img = config().imaging
+        c1, c2 = st.columns(2)
+        condition = c1.selectbox(
+            "Imaging condition", list(IMAGING_CONDITIONS),
+            index=list(IMAGING_CONDITIONS).index(img.imaging_condition),
+            help="source_normalized divides by the source illumination, which "
+                 "is what keeps a bright shallow event from setting the scale "
+                 "for the whole image.")
+        laplacian = c2.checkbox(
+            "Laplacian artefact filter", value=img.laplacian_filter,
+            help="Applied as -∇², not ∇². A Laplacian turns a peak into a "
+                 "trough, so the unsigned operator inverts the polarity of "
+                 "every reflector — which it did here until it was caught.")
+        taper = c1.slider(
+            "Near-field taper (wavelengths)", 0.0, 2.0,
+            float(img.taper_wavelengths), 0.25,
+            help="Zeroes the image within this radius of any source or "
+                 "receiver. Those are injection points and the wavefield "
+                 "around one is a singularity no imaging condition removes — "
+                 "57× the reservoir amplitude on the first run here.")
+        start = c2.number_input(
+            "Correlation start (s, 0 = from t=0)",
+            0.0, 2.0, float(img.correlation_start_time or 0.0), 0.01,
+            help="Nothing reflected from the target can arrive sooner than "
+                 "the two-way time to it, so anything correlated before that "
+                 "is near-field by construction. Leave at 0 to derive it from "
+                 "the geometry.")
+        c3, c4 = st.columns(2)
+        scale = c3.slider("Migration velocity scale", 0.90, 1.10,
+                          float(img.velocity_scale), 0.01,
+                          help="1.0 migrates with the true model. Anything "
+                               "else is a deliberate velocity-error experiment.")
+        smooth = c4.slider("Migration velocity smoothing (m)", 0.0, 200.0,
+                           float(img.velocity_smoothing), 10.0)
+
+        changed = (condition != img.imaging_condition
+                   or laplacian != img.laplacian_filter
+                   or taper != img.taper_wavelengths
+                   or start != (img.correlation_start_time or 0.0)
+                   or scale != img.velocity_scale
+                   or smooth != img.velocity_smoothing)
+        if changed:
+            img.imaging_condition = condition
+            img.laplacian_filter = bool(laplacian)
+            img.taper_wavelengths = float(taper)
+            img.correlation_start_time = float(start) if start > 0 else None
+            img.velocity_scale = float(scale)
+            img.velocity_smoothing = float(smooth)
+            invalidate()
+            st.caption("Changed — the image is stale, the gathers are not. "
+                       "Re-run the RTM only.")
+
     if b.button("Run 3D RTM", disabled=blocked or not pipe.result.gathers):
         progress = st.progress(0.0, text="migrating")
         total = {"n": 0}

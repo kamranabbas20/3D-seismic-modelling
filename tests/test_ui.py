@@ -352,3 +352,32 @@ def test_the_sidebar_reports_every_expensive_stage():
     from sim3d.experiments.pipeline import ExperimentResult
     heavy = {"geology", "flow", "earth", "synthetics", "volumes", "gathers", "images"}
     assert heavy <= {f.name for f in ExperimentResult.__dataclass_fields__.values()}
+
+
+def test_the_aerial_view_shares_one_axis_scale():
+    """A plan view with a stretched aspect hides whether the spread is wide
+    enough for the depth of the target, which is what it exists to show."""
+    from sim3d.acquisition.geometry import Acquisition
+    pts = np.array([[0.0, 0.0, 10.0], [100.0, 100.0, 10.0]])
+    figure = ui.aerial_figure(acquisition=Acquisition(sources=pts, receivers=pts))
+    assert figure.layout.yaxis.scaleanchor == "x"
+    assert figure.layout.yaxis.scaleratio == 1
+
+
+def test_the_aerial_view_can_hide_a_dense_receiver_carpet():
+    from sim3d.acquisition.geometry import Acquisition
+    pts = np.array([[0.0, 0.0, 10.0], [100.0, 100.0, 10.0]])
+    acq = Acquisition(sources=pts, receivers=pts)
+    with_rec = ui.aerial_figure(acquisition=acq, show_receivers=True)
+    without = ui.aerial_figure(acquisition=acq, show_receivers=False)
+    assert len(with_rec.data) == len(without.data) + 1
+
+
+def test_fold_is_drawn_on_the_sequential_ramp():
+    """Fold is a count with no meaningful zero to diverge about."""
+    fold = np.arange(25.0).reshape(5, 5)
+    figure = ui.fold_figure(np.arange(5.0), np.arange(5.0), fold)
+    assert figure.data[0].zmin == 0.0
+    # Plotly normalises the scale to tuples, so compare the colours.
+    assert [c for _, c in figure.data[0].colorscale] == [c for _, c in theme.SEQUENTIAL]
+    assert figure.layout.yaxis.scaleanchor == "x"

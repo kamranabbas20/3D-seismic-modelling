@@ -71,3 +71,58 @@ def test_bad_geometry_is_rejected():
         OBNGeometry(receiver_spacing=0.0)
     with pytest.raises(ConfigError, match=r"shape \(n, 3\)"):
         Acquisition(sources=np.zeros((4, 2)), receivers=np.zeros((4, 3)))
+
+
+# ------------------------------------------------- geometry diagnostics
+def _square_survey(extent=1000.0, n=5, depth=540.0):
+    from sim3d.acquisition.geometry import Acquisition
+    a = np.linspace(-extent / 2, extent / 2, n) + 1000.0
+    X, Y = np.meshgrid(a, a, indexing="ij")
+    pts = np.column_stack([X.ravel(), Y.ravel(), np.full(X.size, depth)])
+    return Acquisition(sources=pts, receivers=pts)
+
+
+def test_a_wider_spread_subtends_a_wider_aperture():
+    """The number that decides whether a reflector images as an event or arcs."""
+    from sim3d.acquisition.geometry import sampling_report
+    narrow = sampling_report(_square_survey(500.0), 1200.0, 2400.0, 28.8)
+    wide = sampling_report(_square_survey(1900.0), 1200.0, 2400.0, 28.8)
+    assert wide.aperture_deg > narrow.aperture_deg
+    assert narrow.aperture_deg == pytest.approx(
+        np.degrees(np.arctan2(np.hypot(250.0, 250.0), 660.0)), abs=0.1)
+
+
+def test_the_standoff_is_reported_in_wavelengths():
+    """Below about two, the injection near-field overlaps the target."""
+    from sim3d.acquisition.geometry import sampling_report
+    r = sampling_report(_square_survey(depth=540.0), 1200.0, 2400.0, 12.0)
+    assert r.standoff == pytest.approx(660.0)
+    assert r.wavelength == pytest.approx(200.0)
+    assert r.standoff_wavelengths == pytest.approx(3.3)
+
+
+def test_the_operator_limit_tightens_with_frequency_and_aperture():
+    """Raising the frequency for resolution makes the sampling demand harder,
+    which is the trap: it goes as 1 / fmax."""
+    from sim3d.acquisition.geometry import sampling_report
+    low = sampling_report(_square_survey(), 1200.0, 2400.0, 20.0)
+    high = sampling_report(_square_survey(), 1200.0, 2400.0, 40.0)
+    assert high.operator_limit == pytest.approx(low.operator_limit / 2, rel=1e-6)
+    wide = sampling_report(_square_survey(2000.0), 1200.0, 2400.0, 20.0)
+    assert wide.operator_limit < low.operator_limit
+
+
+def test_a_narrow_aperture_and_coarse_sampling_are_both_reported():
+    from sim3d.acquisition.geometry import sampling_report
+    r = sampling_report(_square_survey(300.0), 1200.0, 2400.0, 28.8,
+                        source_spacing=400.0, receiver_spacing=400.0)
+    notes = " ".join(r.notes())
+    assert "aperture" in notes
+    assert "source spacing" in notes and "receiver spacing" in notes
+
+
+def test_a_healthy_geometry_reports_nothing():
+    from sim3d.acquisition.geometry import sampling_report
+    r = sampling_report(_square_survey(1900.0), 1200.0, 2400.0, 28.8,
+                        source_spacing=20.0, receiver_spacing=20.0)
+    assert r.notes() == []

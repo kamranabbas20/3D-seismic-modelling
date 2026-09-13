@@ -169,6 +169,101 @@ def fold_map(acquisition: Acquisition, grid: Grid3D, depth: float,
             fold)
 
 
+@dataclass
+class SamplingReport:
+    """What the geometry can and cannot resolve at a given target.
+
+    Every number here is geometric, and every one of them cost time to
+    learn the hard way on this project: an aperture too narrow images arcs
+    instead of reflectors, a standoff too small lets the injection
+    near-field overlap the target, and sampling coarser than the operator
+    limit leaves each shot's isochrone in the image instead of cancelling
+    it against its neighbours'.
+    """
+
+    target_depth: float
+    standoff: float
+    aperture_deg: float
+    max_offset: float
+    velocity: float
+    fmax: float
+    source_spacing: float
+    receiver_spacing: float
+
+    @property
+    def wavelength(self) -> float:
+        return self.velocity / self.fmax if self.fmax else float("nan")
+
+    @property
+    def standoff_wavelengths(self) -> float:
+        """Acquisition-to-target separation in dominant wavelengths.
+
+        Below about two, the injection near-field and the target overlap and
+        no amount of filtering separates them.
+        """
+        return self.standoff / self.wavelength if self.wavelength else float("nan")
+
+    @property
+    def operator_limit(self) -> float:
+        """Trace spacing that does not alias the migration operator, metres.
+
+        ``V / (4 f_max sin(theta))`` - the standard criterion for the
+        steepest dip the aperture admits.
+        """
+        s = np.sin(np.radians(self.aperture_deg))
+        if s <= 0 or self.fmax <= 0:
+            return float("inf")
+        return self.velocity / (4.0 * self.fmax * s)
+
+    def factor(self, spacing: float) -> float:
+        """How many times coarser than the operator limit ``spacing`` is."""
+        limit = self.operator_limit
+        return spacing / limit if np.isfinite(limit) and limit > 0 else 0.0
+
+    def notes(self) -> list[str]:
+        """Plain statements about what this geometry will and will not do."""
+        out = []
+        if self.aperture_deg < 25.0:
+            out.append(
+                f"aperture is only {self.aperture_deg:.0f} degrees at the target; "
+                f"below about 30 a flat reflector images as arcs rather than a "
+                f"continuous event - widen the spread or move the acquisition closer")
+        if self.standoff_wavelengths < 2.0:
+            out.append(
+                f"the acquisition sits {self.standoff_wavelengths:.1f} wavelengths "
+                f"above the target; below about 2 the injection near-field overlaps "
+                f"it and no filter separates them - move the acquisition up")
+        for label, spacing in (("source", self.source_spacing),
+                               ("receiver", self.receiver_spacing)):
+            f = self.factor(spacing)
+            if f > 2.0:
+                out.append(
+                    f"{label} spacing is {spacing:,.0f} m against an operator limit "
+                    f"of {self.operator_limit:,.0f} m ({f:.1f}x coarse)")
+        return out
+
+
+def sampling_report(acquisition: Acquisition, target_depth: float,
+                    velocity: float, fmax: float,
+                    source_spacing: float = 0.0,
+                    receiver_spacing: float = 0.0) -> SamplingReport:
+    """Aperture, standoff and sampling limits for one acquisition and target."""
+    src = np.asarray(acquisition.sources, dtype=float)
+    rec = np.asarray(acquisition.receivers, dtype=float)
+    both = np.vstack([src, rec])
+    centre = both[:, :2].mean(axis=0)
+    standoff = float(target_depth - both[:, 2].mean())
+    half_spread = float(np.hypot(*(both[:, :2] - centre).T).max())
+    aperture = float(np.degrees(np.arctan2(half_spread, max(standoff, 1e-9))))
+    return SamplingReport(
+        target_depth=float(target_depth), standoff=standoff,
+        aperture_deg=aperture, max_offset=float(acquisition.offsets().max()),
+        velocity=float(velocity), fmax=float(fmax),
+        source_spacing=float(source_spacing),
+        receiver_spacing=float(receiver_spacing),
+    )
+
+
 def offset_distribution(acquisition: Acquisition, n_bins: int = 20):
     """Histogram of source-receiver offsets: ``(centres, counts)``."""
     off = acquisition.offsets().ravel()

@@ -182,6 +182,114 @@ def map_figure(wells=None, acquisition=None, grid: Grid3D | None = None,
     return fig
 
 
+def aerial_figure(acquisition=None, wells=None, domains=None, pml_nodes: int = 0,
+                  height: int = 560, show_receivers: bool = True) -> go.Figure:
+    """Plan view of the survey, drawn to scale.
+
+    The axes share a scale, so an aerial view reads as distance rather than
+    as a stretched rectangle - which matters here, because whether the
+    spread is wide enough for the depth of the target is exactly the
+    question this figure exists to answer.
+
+    Layers, outermost first: the geological model, the propagation domain,
+    the inner edge of the absorbing layer, the imaging target, then the
+    receivers, the sources and the wells.
+    """
+    fig = go.Figure()
+
+    def box(grid, colour, dash, label, width=1.5):
+        (x0, x1), (y0, y1) = grid.bounds[0], grid.bounds[1]
+        fig.add_shape(type="rect", x0=x0, x1=x1, y0=y0, y1=y1,
+                      line=dict(color=colour, width=width, dash=dash))
+        fig.add_annotation(x=x0, y=y1, text=label, showarrow=False,
+                           xanchor="left", yanchor="bottom",
+                           font=dict(color=theme.INK_MUTED, size=10))
+
+    if domains is not None:
+        box(domains.geology, theme.GRIDLINE, "solid", "geological model")
+        box(domains.propagation, theme.AXIS, "solid", "propagation domain")
+        if pml_nodes:
+            box(domains.propagation.padded(-pml_nodes), theme.AXIS, "dash",
+                "inner edge of the absorbing layer", width=1.0)
+        box(domains.target, theme.SERIES[2], "dot", "imaging target")
+
+    if acquisition is not None:
+        if show_receivers:
+            fig.add_trace(go.Scatter(
+                x=acquisition.receivers[:, 0], y=acquisition.receivers[:, 1],
+                mode="markers", name=f"receivers ({acquisition.n_receivers:,})",
+                marker=dict(symbol="square", size=5, color=theme.SERIES[0]),
+                hovertemplate="receiver<br>x=%{x:,.0f} m<br>y=%{y:,.0f} m<extra></extra>"))
+        fig.add_trace(go.Scatter(
+            x=acquisition.sources[:, 0], y=acquisition.sources[:, 1],
+            mode="markers", name=f"sources ({acquisition.n_sources:,})",
+            marker=dict(symbol="x", size=9, color=theme.SERIES[1],
+                        line=dict(width=1)),
+            hovertemplate="source<br>x=%{x:,.0f} m<br>y=%{y:,.0f} m<extra></extra>"))
+
+    if wells is not None:
+        for role in ("injector", "producer", "observation"):
+            group = [w for w in wells if w.role == role]
+            if not group:
+                continue
+            fig.add_trace(go.Scatter(
+                x=[w.x for w in group], y=[w.y for w in group],
+                mode="markers+text", name=role,
+                text=[w.name for w in group], textposition="top center",
+                textfont=dict(color=theme.INK_SECONDARY, size=11),
+                marker=dict(size=13, color=theme.WELL_COLOUR[role],
+                            symbol=theme.WELL_SYMBOL_2D[role],
+                            line=dict(width=2, color=theme.SURFACE)),
+                hovertext=[f"{w.name} ({role})" for w in group],
+                hoverinfo="text"))
+
+    fig.update_layout(**theme.plotly_layout(
+        height=height, margin=dict(l=60, r=20, t=44, b=48),
+        xaxis_title="x (m)", yaxis_title="y (m)",
+        yaxis=dict(scaleanchor="x", scaleratio=1, gridcolor=theme.GRIDLINE,
+                   linecolor=theme.AXIS, tickfont=dict(color=theme.INK_MUTED)),
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, x=0)))
+    return fig
+
+
+def fold_figure(x, y, fold, *, wells=None, height: int = 460,
+                title: str = "") -> go.Figure:
+    """Common-midpoint fold in map view.
+
+    Fold is a count, so it takes the sequential ramp, not the diverging one:
+    there is no meaningful zero to diverge about.
+    """
+    values = np.asarray(fold, dtype=float)
+    fig = go.Figure(go.Heatmap(
+        z=values.T, x=np.asarray(x, dtype=float), y=np.asarray(y, dtype=float),
+        colorscale=theme.SEQUENTIAL, zmin=0.0,
+        colorbar=dict(title="traces", thickness=12,
+                      tickfont=dict(color=theme.INK_MUTED)),
+        hovertemplate="x=%{x:,.0f} m<br>y=%{y:,.0f} m<br>%{z:,.0f} traces<extra></extra>"))
+    if wells is not None:
+        for role in ("injector", "producer", "observation"):
+            group = [w for w in wells if w.role == role]
+            if not group:
+                continue
+            fig.add_trace(go.Scatter(
+                x=[w.x for w in group], y=[w.y for w in group],
+                mode="markers+text", text=[w.name for w in group],
+                textposition="top center", showlegend=False,
+                textfont=dict(color=theme.INK_PRIMARY, size=10),
+                marker=dict(size=11, color=theme.WELL_COLOUR[role],
+                            symbol=theme.WELL_SYMBOL_2D[role],
+                            line=dict(width=2, color=theme.SURFACE)),
+                hovertext=[f"{w.name} ({role})" for w in group], hoverinfo="text"))
+    fig.update_layout(**theme.plotly_layout(
+        title=dict(text=title, font=dict(size=14)), height=height,
+        margin=dict(l=60, r=20, t=44, b=48),
+        xaxis_title="x (m)", yaxis_title="y (m)",
+        yaxis=dict(scaleanchor="x", scaleratio=1, gridcolor=theme.GRIDLINE,
+                   linecolor=theme.AXIS, tickfont=dict(color=theme.INK_MUTED)),
+        showlegend=False))
+    return fig
+
+
 def series_figure(x, series: dict[str, np.ndarray], *, xlabel: str, ylabel: str,
                   height: int = 340, colours=None) -> go.Figure:
     """Line chart for continuous data.
