@@ -113,6 +113,35 @@ changes too little of the travel path to shift the section below it, so this
 reservoir the same code gives the opposite answer: 6 ms of shift alone
 manufactures 58 % NRMS.
 
+## The flood through time, as a section between the wells
+
+The wells share y = 700 m, so the P1 -> I1 line is a constant-y inline and
+the section is a straight slice rather than an interpolated traverse. Four
+surveys - day 0, 365, 730 and 1095 - on one shared time axis set by the
+slowest of them, because each survey has its own velocity and so its own
+deepest two-way time, and letting each end at its own would put the
+monitors on axes the baseline cannot be subtracted from.
+
+| day | traces with a 4D response above 10 % of peak | flow contact |
+|---|---|---|
+| 365 | 50 | x = 500 m |
+| 730 | 56 | x = 460 m |
+| 1095 | 62 | x = 430 m |
+
+**The peak saturates and the extent grows.** The largest 4D amplitude is
+28.4 %, 28.1 % and 28.2 % of the baseline peak at the three dates -
+essentially unchanged. That is not a flat response: wherever the front has
+passed, the oil-to-water substitution is *complete*, so the amplitude
+change there is maxed out from the first year. What advances is the edge of
+the anomaly, and it advances in step with the contact the flow simulation
+puts there - two calculations that share no code agreeing on the same
+front.
+
+Reading the anomaly's updip edge directly is harder than it looks: a
+threshold on trace amplitude picks up a small edge-of-model artefact at
+x = 0 before it reaches the front, which is why the table counts affected
+traces rather than quoting an edge position.
+
 ## What was not run
 
 The migrated image. The acquisition is defined and passes QC — 30 sources,
