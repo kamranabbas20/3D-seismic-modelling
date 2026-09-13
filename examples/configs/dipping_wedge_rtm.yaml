@@ -1,0 +1,164 @@
+# A 40-degree dipping three-layer trap: downdip water injection, updip
+# production, and an oil-water contact cutting the sand.
+#
+# The point of the 40-degree dip is that it is steep. Two consequences are
+# structural, not numerical, and they decide what this experiment can show:
+#
+#   * A 20 m sand at 2,000 m is below tuning. Vp there is about 2,600 m/s,
+#     so at 30 Hz the wavelength is ~87 m and the bed is a quarter of it.
+#     The top and base of the sand do not resolve as two events; they
+#     interfere into one composite wavelet whose amplitude carries the
+#     thickness. That is the physics, not a limitation of the modelling.
+#   * A 1D convolution has no lateral energy transport, so it mispositions
+#     anything steeper than a few degrees. sim2seis will put this reflector
+#     in the wrong place by construction. Only the migrated path can image
+#     it, and comparing the two is the honest way to show that.
+#
+project:
+  name: dipping_wedge_rtm
+  description: >
+    The dipping wedge, migrated: the same geology, flow and contact as
+    dipping_wedge_4d, with the source and scenario list sized for a
+    full-wave run rather than a 1D convolution.
+  seed: 1
+
+domains:
+  # The cell size is set by the dip, not by the seismic. A bed of thickness
+  # `gross` dipping at `theta` drops dx*tan(theta) per lateral cell, so
+  # adjacent columns of sand only overlap by gross - dx*tan(theta). At 40
+  # degrees and dx = 20 m that overlap is 3 m against a 20 m bed, and on a
+  # 5 m vertical grid a third of the column pairs then share no cell at
+  # all: the reservoir becomes a disconnected staircase, the wells lose
+  # pressure communication, and the material balance still closes while the
+  # answer is wrong. dx = 10 m and dz = 4 m leave ~3 cells of overlap.
+  #
+  # 1,000 m of dip length carries 839 m of relief, so the sand runs from
+  # 1,580 m updip to 2,420 m downdip.
+  geology_bounds: [[0, 1000], [0, 1400], [0, 2900]]
+  geology_spacing: [10.0, 50.0, 4.0]
+  # Nothing varies along y - the dip is along x - so the geology is sampled
+  # coarsely there. The propagation grid is not: a 10-node absorbing layer
+  # costs 10 * dy of real distance per face, so a coarse dy would spend most
+  # of the model on sponge.
+  propagation_bounds: [[40, 960], [40, 1360], [480, 2820]]
+  propagation_spacing: [10.0, 20.0, 10.0]
+  # The imaging window covers the middle of the dip range, including the
+  # contact at x = 560 m, and leaves the survey room to reach past it.
+  target_bounds: [[250, 750], [500, 900], [1500, 2500]]
+
+geology:
+  template: three_layer
+  parameters:
+    extent: [1000.0, 1400.0, 2900.0]
+    z_reservoir: 2000.0
+    gross: 20.0
+    dip: 40.0
+    azimuth: 90.0        # dips towards +x, so +x is downdip
+    seed: 1
+
+# One global dry frame makes the shale slower than the reservoir sand and
+# leaves the top of the sand with almost no impedance contrast. A stiff
+# frame for the shale restores it.
+rock_physics:
+  dry_frame_model: soft_sand
+  critical_porosity: 0.40
+  coordination: 9.0
+  temperature: 85.0
+  facies:
+    shale:
+      dry_frame_model: stiff_sand
+      critical_porosity: 0.55
+      coordination: 6.0
+
+reservoir:
+  source: flow
+  baseline:
+    sw: 0.18           # irreducible water in the oil column
+    temperature: 85.0
+    pressure_gradient: 10500.0
+    datum_pressure: 101325.0
+    owc: 2050.0        # cuts the sand at x = 560 m
+    transition: 15.0   # a thin capillary transition, not a sharp step
+
+wells:
+  wells:
+    # Updip, in the oil leg: sand at 1,748-1,768 m here.
+    - name: P1
+      role: producer
+      x: 200.0
+      y: 700.0
+      completions: [reservoir]
+      control: liquid_rate
+      target: 2250.0          # STB/day, the tool's pattern-scale suggestion
+      bhp_limit_psi: 1100.0
+    # Downdip, in the water leg: sand at 2,252-2,272 m here.
+    - name: I1
+      role: injector
+      x: 800.0
+      y: 700.0
+      completions: [reservoir]
+      control: water_rate
+      target: 2200.0          # STB/day, VRR 0.98
+      bhp_limit_psi: 4000.0   # above the 3,445 psi at its own sand depth
+
+simulation:
+  duration_days: 1095.0      # three years
+  report_every_days: 45.625
+  max_timestep_days: 30.0
+  monitor_day: 1095.0
+  swc: 0.18
+  sor: 0.25
+  krw_max: 0.35
+  kro_max: 0.90
+  water_viscosity_cp: 0.45
+  oil_viscosity_cp: 1.1
+  gravity: true
+
+solver:
+  pml_nodes: 10
+
+acquisition:
+  type: OBN
+  # The propagation domain starts at 480 m and the absorbing layer takes
+  # the first 100 m of it, so nothing may sit above 580 m.
+  receiver_depth: 620.0
+  source_depth: 600.0
+  receiver_spacing: 40.0
+  source_spacing: 80.0
+
+# A migration on this model is grid-bound, not bandwidth-bound. The
+# propagation grid is 10 m and the slowest cell in it is 2,024 m/s, so an
+# 8th-order scheme holds 1% phase error only up to 2024/(5.25*10) = 38.5 Hz.
+# A Ricker peaking at 16 Hz has its practical Fmax at exactly that, which is
+# the most bandwidth this grid can carry honestly. Asking for the Ormsby the
+# sim2seis run uses would be asking for 55 Hz on a grid that disperses above
+# 38, and the extra bandwidth would arrive as numerical noise.
+#
+# The cost of that honesty is resolution: at 16 Hz the wavelength in the
+# sand is about 160 m and the 20 m bed is an eighth of it. This image can
+# detect the sand and the 4D change on it; it cannot resolve its top from
+# its base. The 40-degree dip is the compensation - a steep reflector is
+# easier to image at low frequency, since the operator aliasing limit
+# V/(4 f sin(theta)) relaxes to 26 m, comfortably above the 40 m receiver
+# spacing... which it is not. See docs.
+source:
+  type: ricker
+  frequency: 16.0
+
+sim2seis:
+  map_to_depth: true
+  time_shifts: true
+  noise:
+    level: 0.06
+    repeatability: 0.7
+    seed: 11
+
+# Only the two surveys a 4D image needs. The decomposition scenarios are
+# what the sim2seis run is for: they cost a quarter of the compute there and
+# half of it here, and separating pressure from saturation does not need a
+# migration to be meaningful.
+fourd:
+  scenarios: [baseline, combined]
+
+# No budget override needed: dropping to two surveys brings 7.7e11 cell-steps
+# down to 3.9e11, which is HIGH rather than VERY HIGH and inside the default.

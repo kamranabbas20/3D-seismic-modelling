@@ -107,6 +107,21 @@ class ExperimentResult:
     timings: dict[str, float] = field(default_factory=dict)
 
 
+def _cost_class(value) -> CostClass:
+    """Resolve a configured cost class, naming the options when it is wrong.
+
+    The enum's own error is a bare ValueError quoting the string back, which
+    does not say that the values carry a space or what they are.
+    """
+    try:
+        return CostClass(value)
+    except ValueError as exc:
+        raise ConfigError(
+            f"budget.max_cost_class is {value!r}; valid classes are "
+            f"{[c.value for c in CostClass]} - note the space in 'VERY HIGH'"
+        ) from exc
+
+
 class Pipeline:
     """Builds an experiment stage by stage, caching what it has already done."""
 
@@ -539,7 +554,7 @@ class Pipeline:
         budget = ResourceBudget(
             max_ram_bytes=self.config.budget.max_ram_gb * 2**30,
             max_disk_bytes=self.config.budget.max_disk_gb * 2**30,
-            max_cost_class=CostClass(self.config.budget.max_cost_class),
+            max_cost_class=_cost_class(self.config.budget.max_cost_class),
         )
         check_budget(estimate, budget)
         return estimate
