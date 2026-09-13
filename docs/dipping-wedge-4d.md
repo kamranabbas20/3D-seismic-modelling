@@ -83,18 +83,20 @@ NRMS against the baseline, per scenario and angle stack:
 
 | scenario | near | mid | far |
 |---|---|---|---|
-| pressure only | 12.78 | 11.37 | 10.58 |
-| saturation only | 24.90 | 26.98 | 30.52 |
-| combined | 27.18 | 28.58 | 31.76 |
+| pressure only | 8.72 | 8.25 | 7.97 |
+| saturation only | 22.53 | 24.38 | 27.57 |
+| combined | 23.15 | 25.02 | 28.38 |
 
-Noise floor 4.65 % (6 % of signal RMS at 70 % repeatability), so every
-number above is signal.
+Noise floor 4.6 % (6 % of signal RMS at 70 % repeatability), so every number
+above is signal.
 
-*These seismic figures were measured on the first geometry. The flow and
-contact numbers above are from the final one; the seismic is being re-run
-on it to confirm. The model differs only in how widely and finely y is
-sampled — nothing varies along y, since the dip is along x — so the
-per-column physics is unchanged, but the cube-wide NRMS may move slightly.*
+An earlier geometry, differing only in how widely and finely y was sampled,
+gave 12.78 / 24.90 / 27.18 for the three near-stack figures. Nothing in the
+model varies along y — the dip is along x — so the per-column physics is
+identical and only the cube-wide average moved, by two to four NRMS points.
+Worth stating plainly: a whole-volume NRMS is a property of the volume you
+chose as much as of the change you modelled, and it is not comparable
+between two runs on different grids.
 
 **The AVO separates the two causes, and in opposite directions.** The
 saturation response *grows* with angle, 24.90 to 30.52; the pressure
@@ -103,9 +105,9 @@ exist for: a far-stack difference that brightens is fluid, one that dims is
 pressure.
 
 **The time shifts are negligible and that is the useful finding.** The true
-shift peaks at 1.29 ms and the windowed estimate recovers it to 0.70 ms RMS.
+shift peaks at 1.28 ms and the windowed estimate recovers it to 0.61 ms RMS.
 Aligning the monitor before differencing moves the combined near-stack NRMS
-from 27.18 % to 23.74 % — a real but secondary correction. A 20 m reservoir
+from 23.15 % to 19.94 % — a real but secondary correction. A 20 m reservoir
 changes too little of the travel path to shift the section below it, so this
 4D is an amplitude signal almost entirely. On a thick or compacting
 reservoir the same code gives the opposite answer: 6 ms of shift alone
