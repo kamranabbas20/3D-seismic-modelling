@@ -34,17 +34,22 @@ domains:
   #
   # 1,000 m of dip length carries 839 m of relief, so the sand runs from
   # 1,580 m updip to 2,420 m downdip.
-  geology_bounds: [[0, 1000], [0, 600], [0, 2900]]
-  geology_spacing: [10.0, 30.0, 4.0]
-  propagation_bounds: [[60, 940], [60, 540], [500, 2800]]
+  geology_bounds: [[0, 1000], [0, 1400], [0, 2900]]
+  geology_spacing: [10.0, 50.0, 4.0]
+  # Nothing varies along y - the dip is along x - so the geology is sampled
+  # coarsely there. The propagation grid is not: a 10-node absorbing layer
+  # costs 10 * dy of real distance per face, so a coarse dy would spend most
+  # of the model on sponge.
+  propagation_bounds: [[40, 960], [40, 1360], [480, 2820]]
   propagation_spacing: [10.0, 20.0, 10.0]
-  # The target brackets the sand across its whole dip range.
-  target_bounds: [[120, 880], [120, 480], [1500, 2500]]
+  # The imaging window covers the middle of the dip range, including the
+  # contact at x = 560 m, and leaves the survey room to reach past it.
+  target_bounds: [[250, 750], [500, 900], [1500, 2500]]
 
 geology:
   template: three_layer
   parameters:
-    extent: [1000.0, 600.0, 2900.0]
+    extent: [1000.0, 1400.0, 2900.0]
     z_reservoir: 2000.0
     gross: 20.0
     dip: 40.0
@@ -81,7 +86,7 @@ wells:
     - name: P1
       role: producer
       x: 200.0
-      y: 300.0
+      y: 700.0
       completions: [reservoir]
       control: liquid_rate
       target: 2250.0          # STB/day, the tool's pattern-scale suggestion
@@ -90,7 +95,7 @@ wells:
     - name: I1
       role: injector
       x: 800.0
-      y: 300.0
+      y: 700.0
       completions: [reservoir]
       control: water_rate
       target: 2200.0          # STB/day, VRR 0.98
@@ -108,6 +113,18 @@ simulation:
   water_viscosity_cp: 0.45
   oil_viscosity_cp: 1.1
   gravity: true
+
+solver:
+  pml_nodes: 10
+
+acquisition:
+  type: OBN
+  # The propagation domain starts at 480 m and the absorbing layer takes
+  # the first 100 m of it, so nothing may sit above 580 m.
+  receiver_depth: 620.0
+  source_depth: 600.0
+  receiver_spacing: 40.0
+  source_spacing: 80.0
 
 source:
   type: ormsby
