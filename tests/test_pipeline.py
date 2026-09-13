@@ -1,5 +1,6 @@
 """End-to-end pipeline and CLI behaviour."""
 
+import pathlib
 import numpy as np
 import pytest
 
@@ -8,6 +9,7 @@ from sim3d.core.config import ExperimentConfig
 from sim3d.core.errors import ConfigError, InfeasibleExperiment
 from sim3d.experiments.pipeline import STAGES, Pipeline
 from sim3d.fourd.scenarios import SCENARIO_NAMES
+from sim3d.validation.qc import Status
 
 
 def tiny_config() -> ExperimentConfig:
@@ -457,3 +459,86 @@ def test_the_sim2seis_cli_command_runs(capsys, tmp_path):
     printed = capsys.readouterr().out
     assert "Not Full 3D Wave Modelling" in printed
     assert "near" in printed and "far" in printed
+
+
+# ------------------------------------------------- survey target coverage
+def _coverage(config):
+    """The one geometry check that reports footprint against the target."""
+    pipeline = Pipeline(config)
+    return next(c for c in pipeline.geometry_qc().checks if "survey" in c.message)
+
+
+def test_an_unset_extent_is_derived_from_the_target():
+    """A survey sized to the target illuminates its edge from one side only.
+
+    The default hangs the footprint off the target rather than off a fixed
+    number, so moving the target moves the survey with it instead of quietly
+    leaving the new edge uncovered.
+    """
+    config = tiny_config()
+    config.acquisition.receiver_extent = None
+    config.acquisition.source_extent = None
+    config.acquisition.target_margin = 100.0
+    # tiny_config pads 12 PML nodes into a 21-node grid, which leaves less
+    # interior than its own target; the derivation is the subject here, not
+    # the clamp, which the next test covers.
+    config.solver.pml_nodes = 2
+    pipeline = Pipeline(config)
+    (x0, x1), (y0, y1), _ = pipeline.domains.target.bounds
+    points = np.vstack([pipeline.acquisition().sources,
+                        pipeline.acquisition().receivers])
+    assert points[:, 0].min() <= x0 - 100.0 + 1e-6
+    assert points[:, 0].max() >= x1 + 100.0 - 1e-6
+
+
+def test_an_explicit_extent_is_still_honoured_as_given():
+    """Stations land on a lattice, so an explicit extent is an upper bound:
+    what it must never do is round *up* and overrun what the user asked for."""
+    config = tiny_config()
+    config.acquisition.receiver_extent = 420.0
+    pipeline = Pipeline(config)
+    rec = pipeline.acquisition().receivers
+    span = rec[:, 0].max() - rec[:, 0].min()
+    assert span <= 420.0 + 1e-6
+    assert span > 420.0 - config.acquisition.receiver_spacing
+
+
+def test_a_derived_extent_never_reaches_into_the_absorbing_layer():
+    """The domain wins over the margin, and the note says the fix is a
+    larger grid - trading a narrow survey for one inside the PML would be
+    the worse of the two defects, silently."""
+    config = tiny_config()
+    config.acquisition.receiver_extent = None
+    config.acquisition.source_extent = None
+    config.acquisition.target_margin = 100_000.0      # absurd on purpose
+    pipeline = Pipeline(config)
+    assert not pipeline.geometry_qc().failed          # still inside the PML
+    assert any("clamped" in n and "propagation_bounds" in n
+               for n in pipeline.result.notes)
+
+
+def test_a_survey_that_stops_at_the_target_edge_is_reported():
+    config = tiny_config()
+    (x0, x1), _, _ = Pipeline(config).domains.target.bounds
+    config.acquisition.receiver_extent = x1 - x0      # exactly the target
+    config.acquisition.source_extent = x1 - x0
+    check = _coverage(config)
+    assert check.status is Status.WARNING
+    assert "stops short" in check.message or "barely" in check.message
+
+
+def test_a_narrow_survey_warns_rather_than_blocks_the_run():
+    """FAIL means the run cannot proceed; an under-sized survey models and
+    migrates perfectly well, it just makes an image whose edges lie."""
+    config = tiny_config()
+    config.acquisition.receiver_extent = 50.0
+    config.acquisition.source_extent = 50.0
+    assert not Pipeline(config).geometry_qc().failed
+
+
+def test_every_shipped_configuration_covers_its_target():
+    """The regression this check was written for: four of the six example
+    configurations sized the survey to the target or narrower."""
+    for path in sorted(pathlib.Path("examples/configs").glob("*.yaml")):
+        check = _coverage(ExperimentConfig.load(path))
+        assert check.status is Status.PASS, f"{path.name}: {check.message}"

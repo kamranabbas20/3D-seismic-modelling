@@ -238,10 +238,18 @@ class AcquisitionConfig:
     type: str = "OBN"
     centre: list | None = None
     receiver_spacing: float = 200.0
-    receiver_extent: float = 1600.0
+    #: Surface footprint of the carpet.  ``None`` derives it from the imaging
+    #: target plus ``target_margin`` on every side, which is what keeps the
+    #: edge of the target illuminated from both sides instead of one.
+    receiver_extent: float | None = None
     source_spacing: float = 150.0
     source_line_spacing: float = 300.0
-    source_extent: float = 1600.0
+    source_extent: float | None = None
+    #: Metres of footprint beyond each edge of the target, used for whichever
+    #: extent is left unset.  A survey that stops at the target boundary has
+    #: no fold and one-sided illumination there, so the edge of the anomaly
+    #: is the part of the image least to be trusted.
+    target_margin: float = 200.0
     receiver_depth: float = 400.0
     source_depth: float = 380.0
     source_decimation: int = 1

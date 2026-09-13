@@ -145,8 +145,16 @@ def check_model(model: AcousticModel, f0: float, spatial_order: int = 8,
 
 
 def check_geometry(acquisition, grid: Grid3D, pml_nodes: int,
-                   result: QCResult | None = None) -> QCResult:
-    """Check that the acquisition fits inside the propagation domain and its interior."""
+                   result: QCResult | None = None,
+                   target: Grid3D | None = None) -> QCResult:
+    """Check that the acquisition fits inside the propagation domain and its interior.
+
+    With a ``target`` it also checks that the survey reaches past it.  A
+    carpet that stops at the target boundary leaves the edge of the anomaly
+    illuminated from one side and carrying almost no fold, which is exactly
+    where a 4D interpretation gets read - so it is worth saying out loud
+    rather than leaving to be noticed in the image.
+    """
     result = result or QCResult()
     outside = acquisition.outside(grid)
     result.add(Status.PASS if not outside else Status.FAIL,
@@ -160,6 +168,41 @@ def check_geometry(acquisition, grid: Grid3D, pml_nodes: int,
     result.add(Status.PASS if not in_pml else Status.FAIL,
                f"no source or receiver inside the {pml_nodes}-node absorbing layer"
                + (f"; {len(in_pml)} are, first {in_pml[0]}" if in_pml else ""))
+
+    if target is not None:
+        check_target_coverage(acquisition, target, result)
+    return result
+
+
+#: Surface footprint beyond each target edge below which coverage is called
+#: marginal.  Not a physical threshold - the physical one is the aperture,
+#: which depends on depth and velocity - but a spacing-free floor that
+#: catches a survey sized to the target instead of past it.
+MIN_TARGET_MARGIN = 100.0
+
+
+def check_target_coverage(acquisition, target: Grid3D,
+                          result: QCResult | None = None) -> QCResult:
+    """Report how far the survey footprint reaches beyond the target."""
+    result = result or QCResult()
+    points = np.vstack([np.asarray(acquisition.sources, dtype=float),
+                        np.asarray(acquisition.receivers, dtype=float)])
+    (tx0, tx1), (ty0, ty1), _ = target.bounds
+    margins = (tx0 - points[:, 0].min(), points[:, 0].max() - tx1,
+               ty0 - points[:, 1].min(), points[:, 1].max() - ty1)
+    worst = float(min(margins))
+    # A warning, not a failure: sim3d reserves FAIL for what cannot proceed,
+    # and an under-sized survey models and migrates perfectly well - it just
+    # produces an image whose edges nobody should read.
+    if worst < 0.0:
+        status, verdict = Status.WARNING, "stops short of the target edge"
+    elif worst < MIN_TARGET_MARGIN:
+        status, verdict = Status.WARNING, "barely reaches past the target"
+    else:
+        status, verdict = Status.PASS, "extends past the target on every side"
+    result.add(status,
+               f"survey {verdict}: {worst:,.0f} m of footprint beyond the "
+               f"narrowest edge")
     return result
 
 

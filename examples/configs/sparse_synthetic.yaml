@@ -27,7 +27,10 @@ domains:
   geology_spacing: [25.0, 25.0, 10.0]
   # The wave-equation domain is a fraction of the geological model, and the
   # target window a fraction of that again (spec section 6).
-  propagation_bounds: [[500, 1500], [500, 1500], [700, 1600]]
+  # Wide enough that the survey can reach past the target: the carpet
+  # must clear the target edge, and it must stay out of the 192 m
+  # absorbing layer, so the domain needs the target plus both.
+  propagation_bounds: [[300, 1700], [300, 1700], [700, 1600]]
   propagation_spacing: [16.0, 16.0, 16.0]
   target_bounds: [[700, 1300], [700, 1300], [1100, 1300]]
 
@@ -92,10 +95,9 @@ acquisition:
   type: OBN
   centre: [1000.0, 1000.0]
   receiver_spacing: 100.0
-  receiver_extent: 500.0
   source_spacing: 250.0
   source_line_spacing: 250.0
-  source_extent: 500.0
+  # Extents unset: derived from the target plus target_margin either side.
   # Both must sit inside the absorbing layer's inner edge, which for a
   # 12-node PML at 16 m is 192 m in from every face: here z >= 892 m.
   receiver_depth: 960.0

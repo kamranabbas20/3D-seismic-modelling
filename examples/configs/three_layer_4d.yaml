@@ -20,7 +20,10 @@ domains:
   # the target. With sources only 1.6 wavelengths above the sand the
   # injection near-field overlaps the reservoir top and no amount of
   # filtering separates them; at 540 m it is 4.2 wavelengths clear.
-  propagation_bounds: [[250, 1750], [250, 1750], [300, 1700]]
+  # Laterally wide enough for the carpet to reach 200 m past the
+  # 1008 m target and still clear the 192 m absorbing layer:
+  # 1408 + 384 = 1792 m, rounded out to 1800.
+  propagation_bounds: [[100, 1900], [100, 1900], [300, 1700]]
   propagation_spacing: [16.0, 16.0, 16.0]
   target_bounds: [[500, 1500], [500, 1500], [1150, 1400]]
 
@@ -96,10 +99,9 @@ acquisition:
   # The reservoir image is limited by the 16 shots, not by receiver
   # sampling. See docs/three-layer-4d.md.
   receiver_spacing: 125.0
-  receiver_extent: 1000.0
   source_spacing: 333.0
   source_line_spacing: 333.0
-  source_extent: 1000.0
+  # Extents unset: derived from the target plus target_margin either side.
   # 12 PML nodes at 16 m need 192 m of clearance from the domain top
   # at 300 m, so 492 m is the shallowest either may sit.
   receiver_depth: 560.0

@@ -353,6 +353,56 @@ class Pipeline:
                        self.config.solver.courant_safety)
         return models, dt
 
+    def _survey_extent(self, configured: float | None, which: str) -> float:
+        """Resolve one survey footprint, deriving it from the target if unset.
+
+        A carpet that stops at the target boundary illuminates the edge of
+        the anomaly from one side only and has almost no fold there, so the
+        least trustworthy part of the image is exactly the part a 4D
+        interpretation is read from.  The default therefore hangs the
+        footprint off the target rather than off a fixed number, and a
+        configuration that names an extent still gets exactly that.
+        """
+        if configured is not None:
+            return float(configured)
+        (x0, x1), (y0, y1), _ = self.domains.target.bounds
+        width = max(x1 - x0, y1 - y0)
+        margin = float(self.config.acquisition.target_margin)
+        # Stations land on a lattice, so a footprint of exactly the requested
+        # width realises as the largest whole number of spacings that fits -
+        # up to one station short of the margin.  Round the request up
+        # instead, or the derived extent under-delivers the one thing it
+        # exists to guarantee.
+        spacing = float(getattr(self.config.acquisition, f"{which}_spacing"))
+        needed = width + 2.0 * margin
+        extent = np.ceil(needed / spacing) * spacing if spacing > 0 else needed
+        room = self._interior_width()
+        if extent > room:
+            # Deriving an extent that puts receivers in the absorbing layer
+            # would trade one defect for a worse one, so the domain wins and
+            # says so: the fix is a larger propagation grid, not a quiet
+            # survey that reports full coverage it does not have.
+            self.result.notes.append(
+                f"acquisition: {which} extent clamped to {room:,.0f} m by the "
+                f"propagation domain; covering the {width:,.0f} m target with "
+                f"{margin:,.0f} m either side needs {extent:,.0f} m, so widen "
+                f"propagation_bounds to get it")
+            return room
+        self.result.notes.append(
+            f"acquisition: {which} extent {extent:,.0f} m derived from the "
+            f"target ({width:,.0f} m) plus {margin:,.0f} m either side")
+        return extent
+
+    def _interior_width(self) -> float:
+        """Widest centred survey the propagation domain's interior allows."""
+        grid = self.domains.propagation
+        interior = grid.padded(-self.config.solver.pml_nodes)
+        (ix0, ix1), (iy0, iy1), _ = interior.bounds
+        a = self.config.acquisition
+        cx, cy = (tuple(a.centre) if a.centre else
+                  (0.5 * sum(grid.bounds[0]), 0.5 * sum(grid.bounds[1])))
+        return 2.0 * min(cx - ix0, ix1 - cx, cy - iy0, iy1 - cy)
+
     def acquisition(self) -> Acquisition:
         if self.result.acquisition is None:
             a = self.config.acquisition
@@ -363,10 +413,12 @@ class Pipeline:
             grid = self.domains.propagation
             centre = tuple(a.centre) if a.centre else (
                 0.5 * sum(grid.bounds[0]), 0.5 * sum(grid.bounds[1]))
+            receiver_extent = self._survey_extent(a.receiver_extent, "receiver")
+            source_extent = self._survey_extent(a.source_extent, "source")
             acq = OBNGeometry(
                 centre=centre, receiver_spacing=a.receiver_spacing,
-                receiver_extent=a.receiver_extent, source_spacing=a.source_spacing,
-                source_line_spacing=a.source_line_spacing, source_extent=a.source_extent,
+                receiver_extent=receiver_extent, source_spacing=a.source_spacing,
+                source_line_spacing=a.source_line_spacing, source_extent=source_extent,
                 receiver_depth=a.receiver_depth, source_depth=a.source_depth,
             ).build()
             if a.source_decimation > 1 or a.receiver_decimation > 1:
@@ -389,7 +441,8 @@ class Pipeline:
         """
         result = QCResult()
         check_geometry(self.acquisition(), self.domains.propagation,
-                       self.config.solver.pml_nodes, result)
+                       self.config.solver.pml_nodes, result,
+                       target=self.domains.target)
         return result
 
     def qc(self) -> QCResult:
@@ -407,7 +460,8 @@ class Pipeline:
                     check.message = f"[{name}] {check.message}"
                 result.checks.extend(sub.checks)
             check_geometry(self.acquisition(), self.domains.propagation,
-                           self.config.solver.pml_nodes, result)
+                           self.config.solver.pml_nodes, result,
+                           target=self.domains.target)
             self.result.qc = result
         return self.result.qc
 
