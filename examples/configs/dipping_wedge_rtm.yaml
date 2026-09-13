@@ -40,8 +40,14 @@ domains:
   # coarsely there. The propagation grid is not: a 10-node absorbing layer
   # costs 10 * dy of real distance per face, so a coarse dy would spend most
   # of the model on sponge.
-  propagation_bounds: [[40, 960], [40, 1360], [480, 2820]]
-  propagation_spacing: [10.0, 20.0, 10.0]
+  # Isotropic 10 m. Numerical dispersion is governed by the *coarsest* axis,
+  # not by the axis the model varies along: the wavefield propagates in y
+  # whether or not the geology does, so a 20 m y on a 10 m x and z sampled
+  # the 52.8 m minimum wavelength at 2.6 cells where an 8th-order scheme
+  # needs 5.25, and QC failed it. y is narrowed to pay for the finer sampling
+  # rather than widened, keeping the cell count where it was.
+  propagation_bounds: [[40, 960], [260, 1160], [480, 2820]]
+  propagation_spacing: [10.0, 10.0, 10.0]
   # The imaging window covers the middle of the dip range, including the
   # contact at x = 560 m, and leaves the survey room to reach past it.
   target_bounds: [[250, 750], [500, 900], [1500, 2500]]
@@ -124,7 +130,7 @@ acquisition:
   receiver_depth: 620.0
   source_depth: 600.0
   receiver_spacing: 40.0
-  source_spacing: 80.0
+  source_spacing: 120.0
 
 # A migration on this model is grid-bound, not bandwidth-bound. The
 # propagation grid is 10 m and the slowest cell in it is 2,024 m/s, so an
