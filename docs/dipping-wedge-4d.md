@@ -185,10 +185,33 @@ construction, and the migrated inline puts the 4D anomaly along the sand
 where the flow simulation says the flood is, terminating updip near
 x = 500 m rather than smeared across the section.
 
+**The boundaries are not the problem.** Measured rather than assumed: the
+same homogeneous model in a 600 m box against an 1,800 m reference box whose
+faces are too far away for anything to return inside the record, so any
+difference after the small box's first face echo *is* the boundary's
+leakage.
+
+| PML | thickness | max leak | RMS |
+|---|---|---|---|
+| 10 nodes (shipped) | 100 m, 0.79 wavelengths | 0.028 % | 0.009 % |
+| 20 nodes | 200 m, 1.58 wavelengths | 0.004 % | 0.001 % |
+| 30 nodes | 300 m, 2.37 wavelengths | 0.001 % | 0.000 % |
+
+All three are negligible, and the shipped layer is already inside 0.03 % of
+a domain with no boundary at all - despite being thinner than the usual
+one-to-two-wavelength guidance. Doubling it would double the domain to
+remove 0.024 % of an artefact.
+
 **The artefacts are large and worth naming.** Sources sit at 600 m and
 receivers at 620 m, which is 100 m below the top of the propagation domain
-and immediately inside the absorbing layer's inner edge, so the top of every
-image carries strong near-field ringing. The right-hand edge carries the
+and 20 m inside the absorbing layer's inner edge, so the top of every image
+carries strong near-field ringing. That is the *source*, not the boundary: a
+source is a singularity and no imaging condition removes it. This project
+already learned that once and added `taper_wavelengths` and
+`correlation_start_time` to `RTMSettings` for it; this configuration sets
+neither, which is the cheapest available improvement to the image and costs
+no propagation, because the taper applies to the image rather than to the
+wavefield. The right-hand edge carries the
 same from the domain boundary. With 9 shots the illumination of a
 40-degree dip is sparse, and the QC said so before the run: the survey
 clears the target by 90 m on its narrowest edge, under the 100 m the check
