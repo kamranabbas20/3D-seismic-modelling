@@ -264,11 +264,37 @@ It ran: 9 shots per survey, two surveys, on the isotropic 10 m grid at a
 | imaging | 2,835 s |
 | total | ~68 min on an idle 4-core machine |
 | memory | 3.56 GB, flat across all 18 shots |
-| RTM 4D NRMS | 8.96 % |
+
+The re-run on the corrected water leg took 158 min for the same work,
+because a test suite and two analysis jobs shared the four cores. Two numba
+jobs on four cores is the oversubscription trap this project has measured
+before; the cost here was 2.5x, not the 13x the flow solver showed, but it
+is the same mistake.
 
 ![the migrated 4D difference](figures/wedge-32_rtm_4d.png)
 
 ![the migrated section](figures/wedge-33_rtm_section.png)
+
+**NRMS depends entirely on where you measure it**, and this is the cleanest
+demonstration of it in the project:
+
+| window | 4D NRMS |
+|---|---|
+| the whole propagation domain | 7.92 % |
+| reservoir window, x 270-730 m, z 1,700-2,400 m | **28.57 %** |
+| the flood front, x 400-620 m, z 1,750-2,150 m | 28.45 % |
+
+The whole-volume figure is diluted 3.6x by overburden that has no 4D change
+in it at all. Only the windowed number means anything, and quoting the
+whole-volume one next to a reservoir measurement would be comparing two
+different questions.
+
+It is also not comparable with the 13.65 % the sim2seis near stack reports.
+Those differ in bandwidth (a 16 Hz Ricker against a 6-12-40-55 Ormsby), in
+noise (the sim2seis cubes carry a 4.65 % floor, these images carry none) and
+in domain (depth against time). The migration is here to put the reflector
+in the right place, which a 1D convolution cannot do at 40 degrees; it is
+not a second opinion on the amplitude.
 
 **The dipping reflector is in the right place.** That is the whole reason to
 pay for a migration here: the 1D convolution mispositions a 40-degree dip by
@@ -293,57 +319,44 @@ a domain with no boundary at all - despite being thinner than the usual
 one-to-two-wavelength guidance. Doubling it would double the domain to
 remove 0.024 % of an artefact.
 
-**The near-field taper, sized properly.** The default is one wavelength,
-126 m here, and it was already on - the artefact simply reaches much
-further. A raised cosine `0.5(1 - cos(pi r/R))` suppresses by only 11 % at
-100 m from a receiver, so the shallow section kept ten times the
-reservoir's RMS.
+**The near-field taper, sized properly.** `taper_wavelengths` defaults to 1
+and `correlation_start_time` to the straight-down-and-back time at the
+fastest velocity, so both were already on before any of this - the artefact
+simply reaches further than one wavelength. At 126 m the shallow section
+carried ten times the reservoir's RMS, because a raised cosine
+`0.5(1 - cos(pi r/R))` suppresses by only 11 % at 100 m from a receiver. The
+configuration now sets `taper_radius: 600.0`, and on this run the shallow
+section measures 0.159 RMS against the reservoir's 0.111 - a ratio of 1.4,
+where it was 9.9.
 
-| extra taper | shallow RMS | reservoir RMS | ratio | 4D NRMS |
-|---|---|---|---|---|
-| none | 1.182 | 0.120 | 9.9 | 29.16 % |
-| 400 m | 0.262 | 0.120 | 2.2 | 29.16 % |
-| **600 m** | 0.133 | 0.120 | **1.1** | 29.16 % |
-| 800 m | 0.079 | 0.120 | 0.7 | 29.16 % |
+The taper is identical in both surveys and cannot reach the target -
+receivers sit at 620 m and the sand inside the imaging window is below
+1,790 m - so it changes the picture and no 4D measurement, which is exactly
+what the function claims for itself.
 
-600 m brings the artefact to parity with the reservoir. It cannot reach the
-target - receivers sit at 620 m and the sand inside the imaging window is
-below 1,790 m - and **the 4D NRMS does not move at all**, because the taper
-is identical in both surveys and cancels exactly in the difference. It
-changes the picture and no measurement, which is what the function claims
-for itself.
-
-![the tapered section](figures/wedge-36_rtm_section_tapered.png)
-
-**The remaining artefacts are worth naming.** Sources sit at 600 m and
-receivers at 620 m, which is 100 m below the top of the propagation domain
-and 20 m inside the absorbing layer's inner edge, so the top of every image
-carries strong near-field ringing. That is the *source*, not the boundary: a
-source is a singularity and no imaging condition removes it. This project
-already learned that once and added `taper_wavelengths` and
-`correlation_start_time` to `RTMSettings` for it; this configuration sets
-neither, which is the cheapest available improvement to the image and costs
-no propagation, because the taper applies to the image rather than to the
-wavefield. The right-hand edge carries the
-same from the domain boundary. With 9 shots the illumination of a
-40-degree dip is sparse, and the QC said so before the run: the survey
-clears the target by 90 m on its narrowest edge, under the 100 m the check
-wants.
-
-**On the 8.96 %.** It is not comparable with the 23.15 % the sim2seis near
-stack reports, because the two are measured over different volumes: the
-migrated image spans the whole propagation domain, most of which is barren
-overburden with no 4D change at all, and a whole-volume NRMS is diluted by
-exactly that. This project has the lesson already - *NRMS depends entirely
-on where you measure it* - and the honest comparison is in a reservoir
-window, which is work still to do.
+**More shots would not fix the edges, and would fix the middle.** The nine
+sources span x = 240 to 760 m; the image spans 40 to 960 m. The stripes down
+the left and right of the section are outside the source carpet entirely,
+so they are un-illuminated migration operator and no number of shots inside
+that footprint touches them - only a wider survey would. Inside the
+aperture it is the opposite: 260 m shot spacing against the operator-
+aliasing limit `V/(4 f sin(theta))`, which at 2,597 m/s, 38.5 Hz and 40
+degrees is 26 m, is a factor of ten too coarse, and the 40 m receiver
+spacing is 1.5x too coarse. The smearing between the shots is aliasing, and
+denser shooting is what removes it.
 
 ## What was not run
 
-The migrated image. The acquisition is defined and passes QC — 30 sources,
-361 receivers, 10,830 traces, clearing the target by 110 m on its narrowest
-edge — but a full-wave run at this bandwidth is the expensive path, and the
-dip is exactly what makes it so: imaging a 40-degree reflector without
-operator aliasing wants trace spacing under about 18 m at 55 Hz. The
-sim2seis numbers above are amplitude-correct per column and structurally
-wrong; a migration would fix the second and change the first.
+**A denser shot carpet.** Nine shots is what makes the interior of this
+image noisy, and the fix is arithmetic: ten times the shots for the same
+survey is ten times the forward modelling and ten times the imaging, so
+about eleven hours on this machine instead of one. The image would be worth
+it; the wall clock is the reason it is not here.
+
+**The angle-stack decomposition on the migrated image.** The migration runs
+`[baseline, combined]` only. Separating pressure from saturation costs
+another two full surveys and does not need a migration to be meaningful -
+that is what the sim2seis run is for, at a quarter of the compute.
+
+**A depth-converted sim2seis section**, which would let the two modes be
+laid side by side on one axis rather than compared through a table.
