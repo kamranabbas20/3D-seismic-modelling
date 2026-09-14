@@ -162,6 +162,40 @@ threshold on trace amplitude picks up a small edge-of-model artefact at
 x = 0 before it reaches the front, which is why the table counts affected
 traces rather than quoting an edge position.
 
+## Why the 4D difference is a doublet
+
+One trace at x = 470 m, where the response is strongest:
+
+![one trace taken apart](figures/wedge-40_doublet.png)
+
+| | AI |
+|---|---|
+| sand, day 0 | 4,997,368 |
+| sand, day 1095 | 5,387,685 (+7.8 %) |
+| surrounding shale | 7,289,456 |
+
+Water hardens the sand - Sw goes 0.18 to 0.67 and impedance rises 7.8 % -
+and the depletion helps in the same direction, since falling pore pressure
+stiffens the frame. But the shale is harder still, so the top of the sand
+is a *trough*, not a peak, and hardening the sand shrinks that contrast:
+
+| | baseline | monitor | difference |
+|---|---|---|---|
+| sand top, 1.452 s | -0.26 | -0.22 | **+0.08, a peak** |
+| sand base, 1.466 s | +0.26 | +0.20 | **-0.055, a trough** |
+
+Opposite signs at the two interfaces, because a harder sand shrinks the
+contrast at both - and the contrasts have opposite polarity to begin with.
+The reflection coefficient at the top goes from -0.187 to -0.150.
+
+They do not appear as two events because the sand is **13.6 ms thick**
+two-way, far shorter than the wavelet. The two opposite-signed changes
+interfere into a single doublet that is close to the wavelet's derivative
+scaled by the bed thickness. That is a thin-bed impedance response, not a
+time shift: the measured shifts peak at 1.28 ms, nowhere near enough to
+produce this amplitude, and a shift would move both interfaces the same way
+rather than opposite ways.
+
 ## The migration
 
 It ran: 9 shots per survey, two surveys, on the isotropic 10 m grid at a
