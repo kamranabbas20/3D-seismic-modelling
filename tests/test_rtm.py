@@ -318,3 +318,55 @@ def test_a_negative_correlation_start_is_rejected():
     from sim3d.imaging.rtm import RTMSettings
     with pytest.raises(ConfigError, match="correlation_start_time"):
         RTMSettings(correlation_start_time=-0.1)
+
+
+def test_the_direct_arrival_can_be_muted_before_migration():
+    """A migration maps an event at time t onto |x-S| + |x-R| = v t. A
+    reflection has a stationary point on that surface and collapses to it; a
+    direct arrival has none, so it paints the whole surface as a smile.
+
+    `correlation_start_time` is one number for every trace and cannot
+    separate a far-offset direct arrival from a near-offset reflection -
+    they overlap in time - so the mute has to move with offset. This checks
+    the wiring: the gathers handed to the migration are muted, the mute
+    deepens with offset, and the cached originals are left alone.
+
+    The velocity model is built here rather than taken from a pipeline
+    stage: `_mute_direct` reads one number off it, and pulling a flow
+    simulation and a rock-physics build in to supply that number made this
+    a half-hour test.
+    """
+    import numpy as np
+    from sim3d.core.config import ExperimentConfig
+    from sim3d.core.grid import Grid3D
+    from sim3d.experiments.pipeline import Pipeline
+    from sim3d.wave.acoustic import AcousticModel, ShotRecord
+
+    grid = Grid3D(origin=(0.0, 0.0, 800.0), spacing=(50.0, 50.0, 20.0),
+                  shape=(8, 8, 8))
+    velocity = 3000.0
+    model = AcousticModel(grid, np.full(grid.shape, velocity),
+                          np.full(grid.shape, 2300.0), name="test")
+
+    config = ExperimentConfig.load("examples/configs/demo_small.yaml")
+    config.imaging.mute_direct_arrival = True
+    pipeline = Pipeline(config)
+
+    receivers = np.array([[500.0, 500.0, 960.0], [1400.0, 500.0, 960.0]])
+    source = (500.0, 500.0, 940.0)
+    nt, dt, pad = 400, 0.002, 0.02
+    record = ShotRecord(traces=np.ones((2, nt), dtype=np.float32), dt=dt,
+                        receiver_positions=receivers, source_position=source)
+
+    out = pipeline._mute_direct({"baseline": [record]}, model, pad)["baseline"][0]
+
+    cuts = [int(np.argmax(trace != 0.0)) for trace in out.traces]
+    assert cuts[1] > cuts[0], "the mute must move with offset, not be a flat gate"
+    for i, rec in enumerate(receivers):
+        offset = float(np.linalg.norm(rec - np.asarray(source)))
+        assert cuts[i] == pytest.approx(
+            int(np.ceil((offset / velocity + pad) / dt)), abs=1)
+    # The cached gathers are untouched: a later run, or a different imaging
+    # choice, has to start from the data rather than from one view of it.
+    assert np.all(record.traces == 1.0)
+    assert any("direct arrival muted" in note for note in pipeline.result.notes)

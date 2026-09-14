@@ -167,6 +167,58 @@ def stacked_sands(extent=(3000.0, 3000.0, 2200.0), z_reservoir=1200.0,
     return layers, FaultSet([])
 
 
+def five_layer(extent=(2000.0, 2000.0, 1800.0), overburden_shale=500.0,
+               upper_sand=500.0, seal=50.0, gross=30.0, base_shale=50.0,
+               seed=1, heterogeneous=True):
+    """Template I: a reflective overburden above a thin 4D target.
+
+    Shale, sand, shale, sand, shale - and only the fourth unit, the thin
+    one, is a reservoir.  The 500 m sand above it is thick, bright and
+    completely inert: nothing is produced from it, nothing is injected into
+    it, and its saturations never move.
+
+    That inertness is the point.  ``three_layer`` puts the target under a
+    featureless halfspace, so the only reflectors in the model are the
+    target's own and anything a migration draws above it is artefact with
+    nothing to compete against - which is what made the acquisition
+    near-field and the migration smiles the dominant features of that
+    image.  Here the interval between the acquisition and the target
+    carries two strong interfaces that do not change between surveys, so
+    the image has real structure to focus on and the 4D difference has
+    somewhere to be quiet.  A monitor that reproduces those reflectors and
+    differences to zero on them is the check that the modelling and the
+    imaging are repeatable; a 4D anomaly on the inert sand is a bug.
+
+    The target is deliberately thinner than the seismic can resolve - 30 m
+    against a quarter-wavelength of about 50 m at these velocities - so its
+    top and base interfere into one composite event and the 4D shows as an
+    amplitude change rather than as two separable interfaces.  That is how
+    a thin reservoir behaves in real 4D, not a limitation of the model.
+    """
+    z_upper = float(overburden_shale)
+    z_seal = z_upper + float(upper_sand)
+    z_reservoir = z_seal + float(seal)
+    z_base = z_reservoir + float(gross)
+
+    sand = _reservoir(Flat(z_reservoir), gross, seed, n_sublayers=3)
+    if not heterogeneous:
+        sand.porosity_heterogeneity = None
+        sand.vsh_heterogeneity = None
+        sand.n_sublayers = 1
+
+    return [
+        Layer("overburden_shale", Flat(0.0), "shale", porosity=0.20, vsh=0.85),
+        # Marked explicitly: the facies is a clean sandstone and would be
+        # treated as a reservoir by default, which would put the flow
+        # simulation - and the 4D - in the wrong unit.
+        Layer("upper_sand", Flat(z_upper), "clean_sandstone",
+              porosity=0.24, vsh=0.12, ntg=0.90, is_reservoir=False),
+        Layer("seal", Flat(z_seal), "shale", porosity=0.12, vsh=0.90),
+        sand,
+        Layer("base_shale", Flat(z_base), "shale", porosity=0.12, vsh=0.90),
+    ], FaultSet([])
+
+
 def three_layer(extent=(3000.0, 3000.0, 2200.0), z_reservoir=1200.0,
                 gross=150.0, seed=1, heterogeneous=True, dip=0.0,
                 azimuth=90.0):
@@ -220,6 +272,7 @@ TEMPLATES: dict[str, Callable] = {
     "lens": lens_reservoir,
     "stacked_sands": stacked_sands,
     "three_layer": three_layer,
+    "five_layer": five_layer,
 }
 
 

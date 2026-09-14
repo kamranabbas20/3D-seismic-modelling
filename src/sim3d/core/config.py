@@ -307,6 +307,14 @@ class ImagingConfig:
     #: of the target can arrive sooner, so anything correlated earlier is
     #: injection near-field.  ``0`` correlates from t = 0 and leaves it in.
     correlation_start_time: float | None = None
+    #: Mute each trace before ``offset / v + mute_pad`` prior to migration.
+    #: ``correlation_start_time`` is one number for every trace and so cannot
+    #: separate a far-offset direct arrival from a near-offset reflection -
+    #: they overlap in time. This moves with offset, which is the only way to
+    #: remove the direct wave without removing the shallowest reflections.
+    mute_direct_arrival: bool = False
+    #: Seconds after the direct arrival at which the mute reaches full gain.
+    mute_pad: float = 0.02
 
     def __post_init__(self) -> None:
         if self.method.upper() not in {m.upper() for m in IMAGING_METHODS}:

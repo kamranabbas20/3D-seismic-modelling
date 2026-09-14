@@ -18,7 +18,7 @@ matters here.
 from __future__ import annotations
 
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 import numpy as np
@@ -46,6 +46,7 @@ from ..geology.builder import (
 )
 from ..geology.templates import template
 from ..imaging.rtm import RTMSettings, RTMResult, migrate_survey
+from ..processing.filters import direct_wave_mute
 from ..processing.preview import convolution_preview, time_from_depth
 from ..processing.sim2seis import sim2seis_volume
 from ..processing.sparse import resolve_locations, sparse_synthetic
@@ -793,6 +794,41 @@ class Pipeline:
         self._wavelet = wavelet
         return self.result.gathers
 
+    def _mute_direct(self, gathers: dict, model, pad: float) -> dict:
+        """Remove the direct arrival from every trace before migrating it.
+
+        A migration maps an event at time ``t`` onto the surface
+        ``|x - S| + |x - R| = v t``.  A reflection has a stationary point on
+        that surface and collapses to it; a direct arrival has none, so it
+        paints the whole surface - a smile that reaches
+        ``0.5 sqrt((X + vT)^2 - X^2)`` below the acquisition plane for a
+        wavelet of duration ``T``.  On the flat three-layer model that is
+        1,060 to 1,206 m for the offsets in the survey, which is exactly
+        where the image carries a V-shaped artefact.
+
+        The mute uses the *fastest* velocity in the migration model, so the
+        cut is as early as it can be and no reflection is removed with it.
+        The gathers themselves are left alone: the cached originals are what
+        a later run, or a different imaging choice, has to start from.
+        """
+        velocity = float(np.max(model.vp))
+        out = {}
+        for name, records in gathers.items():
+            muted = []
+            for record in records:
+                receivers = np.asarray(record.receiver_positions, dtype=float)
+                source = np.asarray(record.source_position, dtype=float)
+                offsets = np.linalg.norm(receivers - source, axis=1)
+                traces = direct_wave_mute(record.traces, offsets, record.dt,
+                                          velocity=velocity, pad=pad)
+                muted.append(replace(record, traces=traces.astype(record.traces.dtype)))
+            out[name] = muted
+        self.result.notes.append(
+            f"imaging: direct arrival muted before {velocity:,.0f} m/s moveout "
+            f"plus {pad * 1e3:.0f} ms - it has no stationary point and images "
+            f"as a smile rather than a reflector")
+        return out
+
     def migration_model(self, true_model: AcousticModel) -> AcousticModel:
         """Build the migration velocity model (spec sections 76-78).
 
@@ -855,6 +891,8 @@ class Pipeline:
             workdir=Path(self.config.output.directory) / self.config.short_hash,
         )
         settings = self.solver_settings(dt)
+        if cfg.mute_direct_arrival:
+            gathers = self._mute_direct(gathers, migration, cfg.mute_pad)
         start = time.perf_counter()
         for name, records in gathers.items():
             self.result.images[name] = migrate_survey(
