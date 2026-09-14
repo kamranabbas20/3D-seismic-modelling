@@ -243,3 +243,53 @@ def test_the_first_well_of_a_role_keeps_the_automatic_suggestion():
     fresh = _new_well_spec(producers, "injector", 600.0, 700.0, grid)
     assert fresh["target"] is None
     assert fresh["control"] == "water_rate"
+
+
+# --------------------------------------------------------------- time spent
+def test_every_timed_stage_is_named_in_the_table_order():
+    """A stage the pipeline times but the table does not know about falls to
+    the end of the list, which is survivable but reads as an afterthought.
+    This fails when a new stage is added and the order is not updated."""
+    import re
+    import pathlib as _pathlib
+    from sim3d.ui.streamlit_app import STAGE_ORDER
+
+    source = (_pathlib.Path(__file__).resolve().parent.parent / "src" / "sim3d"
+              / "experiments" / "pipeline.py").read_text(encoding="utf-8")
+    timed = set(re.findall(r'_timed\(\s*"([^"]+)"', source))
+    timed |= set(re.findall(r'timings\["([^"]+)"\]', source))
+    missing = timed - set(STAGE_ORDER)
+    assert not missing, f"pipeline times {sorted(missing)}, STAGE_ORDER does not"
+
+
+def test_the_timings_table_reports_a_share_of_the_total():
+    from sim3d.ui.streamlit_app import _timings_table
+
+    class _Result:
+        timings = {"geology": 1.0, "flow": 3.0}
+
+    class _Pipe:
+        result = _Result()
+
+    table = _timings_table(_Pipe())
+    assert list(table["elapsed"]) == ["geology", "flow"]      # pipeline order
+    assert table["share"]["flow"] == "75%"
+    assert table["elapsed"]["geology"] == "1.0 s"
+
+
+def test_nothing_computed_yet_is_not_an_empty_table():
+    from sim3d.ui.streamlit_app import _timings_table
+
+    class _Pipe:
+        class result:
+            timings: dict = {}
+
+    assert _timings_table(_Pipe()) is None
+
+
+def test_durations_read_without_counting_zeros():
+    from sim3d.ui.streamlit_app import _format_seconds
+    assert _format_seconds(0.42) == "420 ms"
+    assert _format_seconds(12.3) == "12.3 s"
+    assert _format_seconds(600.0) == "10.0 min"
+    assert _format_seconds(9489.0) == "2.64 h"

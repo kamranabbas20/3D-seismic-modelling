@@ -195,7 +195,68 @@ def sidebar() -> str:
             ("gathers", bool(pipe.result.gathers)),
             ("images", bool(pipe.result.images))) if ok]
         st.sidebar.caption("computed: " + (", ".join(done) if done else "nothing yet"))
+        if pipe.result.timings:
+            total = sum(pipe.result.timings.values())
+            slowest = max(pipe.result.timings.items(), key=lambda kv: kv[1])
+            st.sidebar.caption(
+                f"time spent: {_format_seconds(total)} "
+                f"(most of it {slowest[0]}, {_format_seconds(slowest[1])})")
     return page
+
+
+def _format_seconds(seconds: float) -> str:
+    """Seconds, minutes or hours - whichever reads without counting zeros."""
+    if seconds < 1.0:
+        return f"{seconds * 1000:.0f} ms"
+    if seconds < 120.0:
+        return f"{seconds:.1f} s"
+    if seconds < 7200.0:
+        return f"{seconds / 60:.1f} min"
+    return f"{seconds / 3600:.2f} h"
+
+
+#: Stage keys in the order the pipeline runs them, so the table reads as a
+#: sequence rather than as whatever order the dictionary happened to fill.
+STAGE_ORDER = ("geology", "reservoir", "flow", "rockphysics",
+               "preview", "synthetic", "sim2seis", "time shifts",
+               "simulate", "migrate")
+
+
+def _timings_table(pipe) -> dict | None:
+    """What each stage of this configuration actually cost.
+
+    The pipeline has timed every stage since it was written and nothing in
+    the GUI ever showed it, so the only way to find out whether the flow or
+    the rock physics was the wait was to run the CLI. Cached stages are the
+    point of the table as much as slow ones: a stage that is not listed has
+    not been run for this configuration.
+    """
+    timings = dict(pipe.result.timings)
+    if not timings:
+        return None
+    total = sum(timings.values())
+    ordered = ([k for k in STAGE_ORDER if k in timings]
+               + [k for k in timings if k not in STAGE_ORDER])
+    return {
+        "elapsed": {k: _format_seconds(timings[k]) for k in ordered},
+        "share": {k: f"{timings[k] / total:.0%}" if total else "—"
+                  for k in ordered},
+    }
+
+
+def _timings_panel(pipe, title: str = "Time spent") -> None:
+    table = _timings_table(pipe)
+    st.subheader(title)
+    if table is None:
+        st.caption("Nothing has been computed for this configuration yet. "
+                   "Every stage is timed as it runs and appears here.")
+        return
+    st.dataframe(table, width="stretch")
+    total = sum(pipe.result.timings.values())
+    st.caption(
+        f"{_format_seconds(total)} in total for this configuration. Editing a "
+        f"scientific input drops the stages downstream of it, so a stage that "
+        f"vanishes from this table is one that has to be paid for again.")
 
 
 def cursor_controls(grid) -> tuple[float, float, float]:
@@ -235,6 +296,8 @@ def page_project() -> None:
 
     st.subheader("Configuration")
     st.code(cfg.describe(), language="text")
+
+    _timings_panel(pipeline())
 
     st.subheader("What each mode does and does not model")
     st.caption("Shown here so that no result has to be interpreted by guessing "
@@ -1214,6 +1277,7 @@ def page_simulation() -> None:
         progress.empty()
 
     _sparse_section(pipe)
+    _timings_panel(pipe)
 
     if not pipe.result.gathers:
         n = len(config().fourd.scenarios)
