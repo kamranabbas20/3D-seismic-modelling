@@ -809,6 +809,103 @@ def page_rockphysics() -> None:
                    "simply adding. Rock physics alone, at this stage.")
 
 
+def _acquisition_controls(cfg) -> None:
+    """Edit the geometry the diagnostics below are about to judge.
+
+    The survey diagnostics tell you the standoff is too small or the trace
+    spacing aliases the operator, and until now the page gave no way to act
+    on either: everything under ``acquisition`` and ``domains`` was
+    configuration-file only.  Aperture, standoff and the operator limit are
+    geometry, so they recompute in milliseconds - the point of editing them
+    here is to see the numbers move before spending a shot on them.
+
+    The absorbing layer is the one constraint worth enforcing in the widget
+    rather than in QC afterwards: nothing may sit inside it, and its inner
+    edge moves whenever the top of the propagation domain does.
+    """
+    acq = cfg.acquisition
+    domains = cfg.domains
+    bounds = [list(b) for b in (domains.propagation_bounds or domains.geology_bounds)]
+    spacing = list(domains.propagation_spacing or domains.geology_spacing)
+    pml_metres = cfg.solver.pml_nodes * float(spacing[2])
+    shallowest = float(bounds[2][0]) + pml_metres
+
+    with st.expander("Acquisition geometry"):
+        st.caption(
+            f"The absorbing layer takes {cfg.solver.pml_nodes} nodes - "
+            f"{pml_metres:,.0f} m - off every face, so nothing may sit above "
+            f"z = {shallowest:,.0f} m. Raise the top of the propagation domain "
+            f"to buy standoff above that.")
+
+        a, b, c = st.columns(3)
+        source_spacing = a.number_input(
+            "Source spacing (m)", 10.0, 2000.0, float(acq.source_spacing), 10.0,
+            key="acq_source_spacing",
+            help="Along a source line. Cost is linear in the shot count: the "
+                 "planner reports three propagations per shot per earth model.")
+        line_spacing = b.number_input(
+            "Source line spacing (m)", 10.0, 2000.0,
+            float(acq.source_line_spacing), 10.0, key="acq_line_spacing",
+            help="Between source lines. A separate knob - halving the source "
+                 "spacing alone leaves the lines as far apart as they were.")
+        receiver_spacing = c.number_input(
+            "Receiver spacing (m)", 10.0, 1000.0, float(acq.receiver_spacing),
+            10.0, key="acq_receiver_spacing",
+            help="Nearly free: the receiver wavefield is back-propagated as "
+                 "one field, so the cost does not scale with receiver count.")
+
+        d, e, f = st.columns(3)
+        domain_top = d.number_input(
+            "Propagation domain top (m)", float(domains.geology_bounds[2][0]),
+            float(bounds[2][1]) - 100.0, float(bounds[2][0]), 20.0,
+            key="acq_domain_top",
+            help="Raising this deepens the model and costs cells, and it is "
+                 "the only way to put the acquisition further above the "
+                 "target once the absorbing layer has taken its share.")
+        new_shallowest = domain_top + pml_metres
+        source_depth = e.number_input(
+            "Source depth (m)", new_shallowest, float(bounds[2][1]),
+            max(float(acq.source_depth), new_shallowest), 10.0,
+            key="acq_source_depth")
+        receiver_depth = f.number_input(
+            "Receiver depth (m)", new_shallowest, float(bounds[2][1]),
+            max(float(acq.receiver_depth), new_shallowest), 10.0,
+            key="acq_receiver_depth")
+
+        record = st.number_input(
+            "Record length (s)", 0.1, 20.0, float(cfg.solver.record_length), 0.1,
+            key="acq_record_length",
+            help="Listening time. Moving the acquisition up lengthens every "
+                 "travel path, so a standoff that fixes the near-field needs "
+                 "a longer record to still capture the target.")
+
+        chosen = (source_spacing, line_spacing, receiver_spacing, domain_top,
+                  source_depth, receiver_depth, record)
+        current = (float(acq.source_spacing), float(acq.source_line_spacing),
+                   float(acq.receiver_spacing), float(bounds[2][0]),
+                   float(acq.source_depth), float(acq.receiver_depth),
+                   float(cfg.solver.record_length))
+        if chosen == current:
+            return
+        if min(source_depth, receiver_depth) < new_shallowest:
+            st.error(
+                f"With the domain top at {domain_top:,.0f} m the absorbing "
+                f"layer reaches {new_shallowest:,.0f} m; sources and receivers "
+                f"must sit below that.")
+            return
+        acq.source_spacing = source_spacing
+        acq.source_line_spacing = line_spacing
+        acq.receiver_spacing = receiver_spacing
+        acq.source_depth = source_depth
+        acq.receiver_depth = receiver_depth
+        cfg.solver.record_length = record
+        bounds[2][0] = domain_top
+        domains.propagation_bounds = bounds
+        domains.propagation_spacing = spacing
+        invalidate()
+        st.rerun()
+
+
 def _survey_diagnostics(pipe, cfg, acquisition) -> None:
     """Aperture, standoff and sampling, against the limits that matter.
 
@@ -893,6 +990,7 @@ def page_acquisition() -> None:
     cfg = config()
     st.title("Acquisition & QC")
 
+    _acquisition_controls(cfg)
     acquisition = stage("Building the geometry", pipe.acquisition)
 
     st.subheader("Aerial view")
