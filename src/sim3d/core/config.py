@@ -270,6 +270,11 @@ class AcquisitionConfig:
     source_spacing: float = 150.0
     source_line_spacing: float = 300.0
     source_extent: float | None = None
+    #: Crossline footprints.  ``None`` keeps the carpet square.  Narrow them
+    #: to shoot a line: with the propagation domain narrowed to match, one
+    #: section costs a fraction of the full 3D survey.
+    receiver_extent_y: float | None = None
+    source_extent_y: float | None = None
     #: Metres of footprint beyond each edge of the target, used for whichever
     #: extent is left unset.  A survey that stops at the target boundary has
     #: no fold and one-sided illumination there, so the edge of the anomaly

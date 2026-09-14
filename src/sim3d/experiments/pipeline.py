@@ -481,6 +481,8 @@ class Pipeline:
                 centre=centre, receiver_spacing=a.receiver_spacing,
                 receiver_extent=receiver_extent, source_spacing=a.source_spacing,
                 source_line_spacing=a.source_line_spacing, source_extent=source_extent,
+                receiver_extent_y=a.receiver_extent_y,
+                source_extent_y=a.source_extent_y,
                 receiver_depth=a.receiver_depth, source_depth=a.source_depth,
             ).build()
             if a.source_decimation > 1 or a.receiver_decimation > 1:

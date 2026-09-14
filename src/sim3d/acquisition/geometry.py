@@ -107,6 +107,13 @@ class OBNGeometry:
     source_extent: float = 2000.0
     receiver_depth: float = 400.0
     source_depth: float = 380.0
+    #: Crossline footprints.  ``None`` makes them square, which is what a 3D
+    #: survey wants.  Setting them narrow is what turns this into a line: a
+    #: single shot line and a few receiver lines either side of it, which on
+    #: a flat-layered model images one section for a fraction of the cost
+    #: because the propagation domain can be narrowed to match.
+    receiver_extent_y: float | None = None
+    source_extent_y: float | None = None
     name: str = "obn"
 
     def __post_init__(self) -> None:
@@ -114,6 +121,10 @@ class OBNGeometry:
                       "receiver_extent", "source_extent"):
             if getattr(self, label) <= 0:
                 raise ConfigError(f"{label} must be positive, got {getattr(self, label)}")
+        for label in ("receiver_extent_y", "source_extent_y"):
+            value = getattr(self, label)
+            if value is not None and value <= 0:
+                raise ConfigError(f"{label} must be positive when set, got {value}")
 
     def _axis(self, spacing: float, extent: float, centre: float) -> np.ndarray:
         n = max(int(np.floor(extent / spacing)) + 1, 1)
@@ -122,13 +133,17 @@ class OBNGeometry:
     def build(self) -> Acquisition:
         """Generate the node grid and the shot carpet."""
         rx = self._axis(self.receiver_spacing, self.receiver_extent, self.centre[0])
-        ry = self._axis(self.receiver_spacing, self.receiver_extent, self.centre[1])
+        ry = self._axis(self.receiver_spacing,
+                        self.receiver_extent_y or self.receiver_extent,
+                        self.centre[1])
         gx, gy = np.meshgrid(rx, ry, indexing="ij")
         receivers = np.column_stack([
             gx.ravel(), gy.ravel(), np.full(gx.size, self.receiver_depth)])
 
         sx = self._axis(self.source_spacing, self.source_extent, self.centre[0])
-        sy = self._axis(self.source_line_spacing, self.source_extent, self.centre[1])
+        sy = self._axis(self.source_line_spacing,
+                        self.source_extent_y if self.source_extent_y is not None
+                        else self.source_extent, self.centre[1])
         hx, hy = np.meshgrid(sx, sy, indexing="ij")
         sources = np.column_stack([
             hx.ravel(), hy.ravel(), np.full(hx.size, self.source_depth)])

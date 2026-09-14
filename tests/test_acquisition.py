@@ -143,3 +143,56 @@ def test_the_geometry_survives_an_unknown_velocity():
     assert np.isnan(report.operator_limit)
     assert np.isnan(report.factor(400.0))          # not 0.0: unknown, not fine
     assert report.notes() == []                    # nothing evaluable to warn about
+
+
+# ------------------------------------------------- shooting a line, not a carpet
+def _line_geometry(**kwargs):
+    from sim3d.acquisition.geometry import OBNGeometry
+    base = dict(centre=(1000.0, 1000.0), receiver_spacing=60.0,
+                receiver_extent=840.0, source_spacing=100.0, source_extent=800.0,
+                source_line_spacing=200.0, receiver_depth=400.0, source_depth=380.0)
+    return OBNGeometry(**{**base, **kwargs}).build()
+
+
+def test_the_carpet_is_square_unless_the_crossline_extent_says_otherwise():
+    """Every configuration written before this knob existed has to be
+    untouched by it, so None means square."""
+    from sim3d.acquisition.geometry import OBNGeometry
+    acquisition = _line_geometry()
+    sources = np.asarray(acquisition.sources, dtype=float)
+    assert np.ptp(sources[:, 0]) == pytest.approx(np.ptp(sources[:, 1]))
+
+
+def test_a_narrow_crossline_extent_shoots_one_line():
+    """A source extent smaller than the line spacing leaves exactly one line,
+    which is what turns a carpet into a 2D survey."""
+    acquisition = _line_geometry(source_extent_y=1.0, receiver_extent_y=120.0)
+    sources = np.asarray(acquisition.sources, dtype=float)
+    receivers = np.asarray(acquisition.receivers, dtype=float)
+
+    assert sorted(set(sources[:, 1])) == [1000.0], "one shot line, on the centre"
+    assert len(sources) == 9, "and the inline sampling is untouched"
+    # The receivers keep a few lines either side: they cost almost nothing,
+    # because the receiver wavefield is back-propagated as one field.
+    assert sorted(set(receivers[:, 1])) == [940.0, 1000.0, 1060.0]
+    assert np.ptp(receivers[:, 0]) == pytest.approx(840.0)
+
+
+def test_the_crossline_extent_is_refused_when_it_is_not_positive():
+    from sim3d.acquisition.geometry import OBNGeometry
+    for field in ("receiver_extent_y", "source_extent_y"):
+        with pytest.raises(ConfigError, match=field):
+            OBNGeometry(**{field: 0.0})
+
+
+def test_the_line_survey_reaches_the_pipeline():
+    """The config fields have to survive the trip into OBNGeometry, or the
+    knob exists and does nothing."""
+    from sim3d.core.config import ExperimentConfig
+    from sim3d.experiments.pipeline import Pipeline
+
+    config = ExperimentConfig.load("examples/configs/five_layer_2d.yaml")
+    acquisition = Pipeline(config).acquisition()
+    sources = np.asarray(acquisition.sources, dtype=float)
+    assert len(set(sources[:, 1])) == 1, "five_layer_2d must shoot a single line"
+    assert len(sources) < 15, "and far fewer shots than the 3D carpet"
