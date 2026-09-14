@@ -125,7 +125,7 @@ class ReservoirState:
 
 def saturation_from_contacts(z: np.ndarray, sw_irreducible: float,
                              owc: float | None, goc: float | None,
-                             transition: float = 0.0):
+                             transition: float = 0.0, sw_max: float = 1.0):
     """Saturations against depth for a gas/oil/water column.
 
     Returns ``(sw, so, sg)``.  Depth increases downwards, so the water leg
@@ -137,15 +137,28 @@ def saturation_from_contacts(z: np.ndarray, sw_irreducible: float,
     - the flat spot.
 
     ``transition`` is the height above the oil-water contact over which
-    water saturation falls from 1 to ``sw_irreducible``.  It is a linear
-    ramp, not a J-function: a capillary saturation-height curve needs a
-    pore-throat model the rest of this tool does not carry, and inventing
+    water saturation falls from ``sw_max`` to ``sw_irreducible``.  It is a
+    linear ramp, not a J-function: a capillary saturation-height curve needs
+    a pore-throat model the rest of this tool does not carry, and inventing
     one would dress a straight line up as measurement.  Zero gives a sharp
     contact.
+
+    ``sw_max`` is the water saturation of the water leg.  It defaults to 1,
+    but a flow simulation cannot hold more water than its relative
+    permeability allows: the Corey model clamps saturation into
+    ``[swc, 1 - sor]`` on every step, so a water leg initialised at 1 is
+    pulled to ``1 - sor`` on the first one and the difference appears as
+    hydrocarbon that was never there.  On this project that manufactured a
+    25% oil saturation across the whole water leg and a spurious 4D
+    response equal and opposite to the real flood.
     """
     if not 0.0 <= sw_irreducible <= 1.0:
         raise ConfigError(
             f"irreducible water saturation must be in [0, 1], got {sw_irreducible}")
+    if not sw_irreducible <= sw_max <= 1.0:
+        raise ConfigError(
+            f"the water leg saturation must lie between the irreducible value "
+            f"and 1, got sw_max={sw_max} with Swirr={sw_irreducible}")
     if transition < 0.0:
         raise ConfigError(f"transition zone must not be negative, got {transition}")
     if owc is not None and goc is not None and goc >= owc:
@@ -159,7 +172,7 @@ def saturation_from_contacts(z: np.ndarray, sw_irreducible: float,
             height = np.clip((owc - z) / transition, 0.0, 1.0)
         else:
             height = (z < owc).astype(float)
-        sw = 1.0 + height * (sw_irreducible - 1.0)
+        sw = sw_max + height * (sw_irreducible - sw_max)
     sg = np.zeros(z.shape)
     if goc is not None:
         # A gas cap displaces the oil, not the irreducible water.
@@ -173,7 +186,7 @@ def initial_state(geology, pressure_gradient: float = 10500.0,
                   datum_pressure: float = 101325.0,
                   sw: float = 0.30, sg: float = 0.0, temperature: float = 80.0,
                   owc: float | None = None, goc: float | None = None,
-                  transition: float = 0.0,
+                  transition: float = 0.0, sw_max: float = 1.0,
                   name: str = "baseline") -> ReservoirState:
     """Build a baseline state from a geological model.
 
@@ -203,7 +216,8 @@ def initial_state(geology, pressure_gradient: float = 10500.0,
         so_field = np.clip(1.0 - sw_field - sg_field, 0.0, 1.0)
         provenance.append(f"reservoir Sw = {sw:g}, Sg = {sg:g}, no contacts")
     else:
-        sw_c, so_c, sg_c = saturation_from_contacts(z, sw, owc, goc, transition)
+        sw_c, so_c, sg_c = saturation_from_contacts(z, sw, owc, goc, transition,
+                                                    sw_max=sw_max)
         sw_field = np.where(mask, sw_c, 1.0)
         so_field = np.where(mask, so_c, 0.0)
         sg_field = np.where(mask, sg_c, 0.0)
@@ -212,7 +226,7 @@ def initial_state(geology, pressure_gradient: float = 10500.0,
             + (f"OWC {owc:g} m" if owc is not None else "no OWC")
             + (f", GOC {goc:g} m" if goc is not None else "")
             + (f", {transition:g} m transition" if transition else ", sharp")
-            + f", Swirr = {sw:g}")
+            + f", Swirr = {sw:g}, water leg Sw = {sw_max:g}")
 
     return ReservoirState(
         grid=grid, porosity=geology.porosity, ntg=geology.ntg, vsh=geology.vsh,

@@ -134,3 +134,40 @@ def test_a_contact_reaches_the_pipeline(geology):
     state = pipeline.baseline_state()
     assert state.sw.max() == pytest.approx(1.0)
     assert state.sw[state.reservoir_mask].min() == pytest.approx(SWIRR)
+
+
+def test_the_water_leg_respects_what_the_flow_model_can_hold():
+    """The bug this pins: a water leg at Sw = 1 is outside the Corey endpoints.
+
+    The simulator clamps saturation into [swc, 1 - sor] on every step, so a
+    water leg initialised at 1 is pulled to 1 - sor on the first one and the
+    difference appears as hydrocarbon that was never there. On the dipping
+    wedge that manufactured 25 % oil saturation across the entire water leg
+    and a spurious 4D response of -413,000 in impedance - equal and opposite
+    to the real flood signal of +412,000, and it inverted the polarity of the
+    4D difference downdip of the front.
+    """
+    from sim3d.core.config import ExperimentConfig
+    from sim3d.experiments.pipeline import Pipeline
+
+    config = ExperimentConfig.load("examples/configs/dipping_wedge_4d.yaml")
+    pipeline = Pipeline(config)
+    state = pipeline.baseline_state()
+    ceiling = 1.0 - config.simulation.sor
+    wet = state.reservoir_mask & (state.sw > ceiling + 1e-9)
+    assert not wet.any(), (
+        f"{int(wet.sum())} reservoir cells start above the 1 - sor ceiling of "
+        f"{ceiling}; the flow model will clamp them and invent hydrocarbon")
+    # And the water leg really is at the ceiling, not merely below it.
+    assert state.sw[state.reservoir_mask].max() == pytest.approx(ceiling, abs=1e-6)
+
+
+def test_the_mechanistic_generator_keeps_a_fully_wet_water_leg():
+    """Only a flow simulation has Corey endpoints to respect."""
+    from sim3d.core.config import ExperimentConfig
+    from sim3d.experiments.pipeline import Pipeline
+
+    config = ExperimentConfig.load("examples/configs/dipping_wedge_4d.yaml")
+    config.reservoir.source = "mechanistic"
+    state = Pipeline(config).baseline_state()
+    assert state.sw[state.reservoir_mask].max() == pytest.approx(1.0)
