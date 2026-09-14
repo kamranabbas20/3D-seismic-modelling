@@ -91,8 +91,14 @@ def well_specs() -> list[dict]:
     return cfg.wells.wells
 
 
-def unique_name(prefix: str) -> str:
-    taken = {w["name"] for w in config().wells.wells}
+def unique_name(prefix: str, specs=None) -> str:
+    """The first free ``prefix<n>``, against ``specs`` or the live config.
+
+    Taking the list as an argument keeps the naming testable without a
+    Streamlit session, and keeps it honest when the caller is working on a
+    list it has not yet stored.
+    """
+    taken = {w["name"] for w in (config().wells.wells if specs is None else specs)}
     index = 1
     while f"{prefix}{index}" in taken:
         index += 1
@@ -1063,9 +1069,47 @@ def page_acquisition() -> None:
                 "simulation and the rock physics — minutes, not seconds.")
 
 
+def _scenario_controls(cfg) -> None:
+    """Choose which earth models get modelled, and pay for only those.
+
+    Cost is linear in the list: four scenarios is four independent
+    propagations of every shot.  The decomposition needs all four, but
+    "is the image clean?" needs one, and answering it should not cost the
+    other three.  Baseline is not optional - every difference is measured
+    against it, and a monitor with nothing to subtract is not a 4D result.
+    """
+    chosen = st.multiselect(
+        "Earth models to simulate", list(SCENARIO_NAMES),
+        default=[n for n in SCENARIO_NAMES if n in cfg.fourd.scenarios],
+        help="Each one is modelled independently, so the cost is linear in "
+             "this list. baseline alone answers whether the geometry and the "
+             "imaging work; pressure_only and saturation_only are what "
+             "separate a fluid change from a pressure change, and the "
+             "interaction term needs all four.")
+    # Keep the canonical order whatever order they were clicked in: the
+    # decomposition indexes SCENARIO_NAMES positionally.
+    ordered = [n for n in SCENARIO_NAMES if n in chosen]
+    if not ordered:
+        st.error("Select at least the baseline — there is nothing to model.")
+        return
+    if ordered[0] != "baseline":
+        st.warning("baseline is the reference every difference is measured "
+                   "against; it is always modelled.")
+        ordered = ["baseline"] + ordered
+    if ordered != list(cfg.fourd.scenarios):
+        cfg.fourd.scenarios = ordered
+        invalidate()
+        st.rerun()
+    if len(ordered) < len(SCENARIO_NAMES):
+        st.caption(f"{len(ordered)} of {len(SCENARIO_NAMES)} — "
+                   f"about {len(ordered) / len(SCENARIO_NAMES):.0%} of the "
+                   f"full cost. The 4D decomposition needs all four.")
+
+
 def page_simulation() -> None:
     pipe = pipeline()
     st.title("Simulation & imaging")
+    _scenario_controls(config())
     # Only an already-computed QC blocks the buttons: running it here would
     # make merely opening the page cost a flow simulation.  Nothing unchecked
     # gets modelled regardless, because the run itself calls pipe.qc first.
@@ -1084,9 +1128,11 @@ def page_simulation() -> None:
         progress = st.progress(0.0, text="modelling")
         total = {"n": 0}
 
+        models = max(len(config().fourd.scenarios), 1)
+
         def report(name, done, count):
             total["n"] += 1
-            progress.progress(min(total["n"] / (count * 4), 1.0),
+            progress.progress(min(total["n"] / (count * models), 1.0),
                               text=f"{name}: shot {done} of {count}")
         try:
             if stage("Running QC", pipe.qc).failed:
@@ -1155,9 +1201,11 @@ def page_simulation() -> None:
         progress = st.progress(0.0, text="migrating")
         total = {"n": 0}
 
+        models = max(len(config().fourd.scenarios), 1)
+
         def report(name, done, count):
             total["n"] += 1
-            progress.progress(min(total["n"] / (count * 4), 1.0),
+            progress.progress(min(total["n"] / (count * models), 1.0),
                               text=f"{name}: shot {done} of {count}")
         try:
             pipe.migrate(progress=report)
@@ -1168,8 +1216,10 @@ def page_simulation() -> None:
     _sparse_section(pipe)
 
     if not pipe.result.gathers:
-        st.info("No shot gathers yet. Modelling four earth models is minutes of "
-                "work, so it happens only when you ask for it.")
+        n = len(config().fourd.scenarios)
+        st.info(f"No shot gathers yet. Modelling {n} earth "
+                f"model{'s' if n != 1 else ''} is minutes of work, so it "
+                f"happens only when you ask for it.")
         return
 
     st.subheader("Shot gathers")
@@ -1643,6 +1693,38 @@ def _volume_for(pipe, geology, name):
     return None, "sequential", None
 
 
+def _new_well_spec(specs, role: str, x: float, y: float, grid) -> dict:
+    """A well placed on the map, set up like the ones already there.
+
+    Left to the automatic suggestion a new well is rated by *pattern scale*:
+    the pore volume inside a drainage radius of half the distance to its
+    nearest neighbour, swept over ``sweep_years``.  Drop one next to an
+    existing well and that radius collapses - on the dipping wedge, placing
+    a producer 200 m from P1 suggests 247 STB/day against P1's 2,250, which
+    reads as a broken well rather than as the geometric consequence it is.
+
+    So a new well copies its completion interval, control mode, target and
+    limits from the first well of the same role, which is what "the same as
+    the others" means. With no well of that role to copy, the fields stay
+    unset and the suggestion stands - it has no pattern to be out of step
+    with.
+    """
+    prefix = "P" if role == "producer" else "I"
+    spec = {"name": unique_name(prefix, specs), "role": role, "x": x, "y": y,
+            "perforation": [grid.bounds[2][0], grid.bounds[2][1]],
+            "completions": [],
+            "control": "liquid_rate" if role == "producer" else "water_rate",
+            "target": None, "bhp_limit_psi": None,
+            "start_day": 0.0, "end_day": None}
+    template = next((w for w in specs if w.get("role") == role), None)
+    if template is not None:
+        for key in ("perforation", "completions", "control", "target",
+                    "bhp_limit_psi", "start_day", "end_day"):
+            if key in template:
+                spec[key] = copy.deepcopy(template[key])
+    return spec
+
+
 def page_wells() -> None:
     """Requirements 1, 2, 10 and 12: place, edit and complete wells."""
     pipe = pipeline()
@@ -1676,14 +1758,7 @@ def page_wells() -> None:
         if not grid.contains((x, y, 0.5 * sum(grid.bounds[2]))):
             st.error("That point is outside the geological model.")
         else:
-            prefix = "P" if well_type == "producer" else "I"
-            specs.append({
-                "name": unique_name(prefix), "role": well_type, "x": x, "y": y,
-                "perforation": [grid.bounds[2][0], grid.bounds[2][1]],
-                "completions": [], "control": ("liquid_rate" if
-                                               well_type == "producer" else "water_rate"),
-                "target": None, "bhp_limit_psi": None,
-                "start_day": 0.0, "end_day": None})
+            specs.append(_new_well_spec(specs, well_type, x, y, grid))
             invalidate()
             st.rerun()
 

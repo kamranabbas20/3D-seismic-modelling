@@ -147,3 +147,99 @@ def test_raising_the_domain_top_buys_standoff():
     assert moved.propagation_bounds[2][0] == original - 400.0
     # The geology domain is untouched: only the modelling window moved.
     assert [list(b) for b in moved.geology_bounds] == geology
+
+
+# ---------------------------------------------------- choosing the scenarios
+def _multiselect(app: AppTest, fragment: str):
+    for widget in app.multiselect:
+        if fragment.lower() in (widget.label or "").lower():
+            return widget
+    raise AssertionError(f"no multiselect labelled like {fragment!r}")
+
+
+def test_the_scenarios_to_simulate_are_chosen_on_the_page():
+    """Cost is linear in the list: four earth models is four independent
+    propagations of every shot, and "is the image clean?" needs one."""
+    app = _goto(_app(), "Simulation & Imaging")
+    assert not app.exception, app.exception[0].value
+    _multiselect(app, "Earth models").set_value(["baseline"])
+    app.run()
+    assert not app.exception, app.exception[0].value
+    assert list(app.session_state.config.fourd.scenarios) == ["baseline"]
+
+
+def test_the_baseline_is_always_simulated():
+    """Every difference is measured against it; a monitor with nothing to
+    subtract is not a 4D result."""
+    app = _goto(_app(), "Simulation & Imaging")
+    _multiselect(app, "Earth models").set_value(["combined"])
+    app.run()
+    assert not app.exception, app.exception[0].value
+    assert list(app.session_state.config.fourd.scenarios) == ["baseline", "combined"]
+
+
+def test_the_scenario_order_is_canonical_however_it_was_clicked():
+    """`decompose` indexes SCENARIO_NAMES positionally, so the stored order
+    cannot be the order the boxes happened to be ticked in."""
+    from sim3d.fourd.scenarios import SCENARIO_NAMES
+    app = _goto(_app(), "Simulation & Imaging")
+    _multiselect(app, "Earth models").set_value(["combined", "pressure_only",
+                                                 "baseline"])
+    app.run()
+    assert not app.exception, app.exception[0].value
+    stored = list(app.session_state.config.fourd.scenarios)
+    assert stored == [n for n in SCENARIO_NAMES if n in stored]
+
+
+# ------------------------------------------- a new well joins the pattern
+def test_a_new_well_inherits_the_controls_of_its_own_role():
+    """The gap this closes: left to the automatic suggestion, a well dropped
+    next to an existing one is rated by pattern scale over a drainage radius
+    of half the distance to its neighbour. On the dipping wedge that gives a
+    producer 200 m from P1 a target of 247 STB/day against P1's 2,250."""
+    from sim3d.ui.streamlit_app import _new_well_spec
+    from sim3d.core.config import ExperimentConfig
+    from sim3d.experiments.pipeline import Pipeline
+
+    cfg = ExperimentConfig.load("examples/configs/dipping_wedge_4d.yaml")
+    grid = Pipeline(cfg).domains.geology
+    specs = cfg.wells.wells
+    producer = next(w for w in specs if w["role"] == "producer")
+
+    fresh = _new_well_spec(specs, "producer", 400.0, 700.0, grid)
+    assert fresh["target"] == producer["target"]
+    assert fresh["control"] == producer["control"]
+    assert fresh["bhp_limit_psi"] == producer["bhp_limit_psi"]
+    assert fresh["completions"] == producer["completions"]
+    assert fresh["name"] not in {w["name"] for w in specs}
+
+
+def test_a_new_well_copies_its_own_role_not_the_first_well_it_finds():
+    """An injector must not inherit a producer's control mode: the two are
+    not interchangeable, and water_rate on a producer is nonsense."""
+    from sim3d.ui.streamlit_app import _new_well_spec
+    from sim3d.core.config import ExperimentConfig
+    from sim3d.experiments.pipeline import Pipeline
+
+    cfg = ExperimentConfig.load("examples/configs/dipping_wedge_4d.yaml")
+    grid = Pipeline(cfg).domains.geology
+    injector = next(w for w in cfg.wells.wells if w["role"] == "injector")
+    fresh = _new_well_spec(cfg.wells.wells, "injector", 600.0, 700.0, grid)
+    assert fresh["role"] == "injector"
+    assert fresh["control"] == injector["control"]
+    assert fresh["target"] == injector["target"]
+
+
+def test_the_first_well_of_a_role_keeps_the_automatic_suggestion():
+    """With no well of that role to copy there is no pattern to be out of
+    step with, so the suggestion stands."""
+    from sim3d.ui.streamlit_app import _new_well_spec
+    from sim3d.core.config import ExperimentConfig
+    from sim3d.experiments.pipeline import Pipeline
+
+    cfg = ExperimentConfig.load("examples/configs/dipping_wedge_4d.yaml")
+    grid = Pipeline(cfg).domains.geology
+    producers = [w for w in cfg.wells.wells if w["role"] == "producer"]
+    fresh = _new_well_spec(producers, "injector", 600.0, 700.0, grid)
+    assert fresh["target"] is None
+    assert fresh["control"] == "water_rate"
