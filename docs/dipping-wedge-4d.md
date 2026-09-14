@@ -67,9 +67,9 @@ coefficient — the ordinary class of response for this section.
 | | |
 |---|---|
 | P1, day 1095 | 2,250 STB/day oil, **no water**, BHP 1,968 psi |
-| I1, day 1095 | 2,200 STB/day water, BHP 3,259 psi |
-| material balance | 1.7e-12 over 288 timesteps |
-| swept | 1,851 of 14,645 sand cells, max dSw 0.546 |
+| I1, day 1095 | 2,200 STB/day water, BHP 3,258 psi |
+| material balance | 1.9e-12 over 288 timesteps |
+| swept | 1,873 of 14,645 sand cells, max dSw 0.546 |
 
 The injector sits in water, so every swept cell is the contact itself
 moving. Averaging Sw over the sand in each column puts the oil-water
@@ -77,41 +77,70 @@ boundary at **x = 540 m at the start and x = 430 m after three years**: the
 flood has pushed the contact 110 m updip, and the producer 230 m further
 updip has not yet seen it.
 
+### The water leg is fully wet, and getting there took two attempts
+
+The saturation update used to clamp every cell into the Corey endpoints,
+`[Swc, 1 - Sor]`. Residual oil is the oil a waterflood cannot displace; a
+cell that never held oil has none to leave behind. Clamping the water leg
+to `1 - Sor` therefore put 25 % oil saturation across the entire aquifer on
+the first timestep, oil that was never in the model, and the flood then
+removed it again over three years. In 4D that read as an impedance change
+of **-413,000 in the water leg against the real flood's +412,000** - the
+same size, the opposite sign - which inverted the polarity of the
+difference everywhere downdip of the front and looked exactly like a
+physical result.
+
+The first fix was from the wrong end: initialise the water leg at `1 - Sor`
+so the clamp has nothing to do. That makes the model self-consistent and
+leaves every aquifer in the tool holding immobile oil, which is not a
+property of an aquifer. The ceiling is per cell now, and never below where
+the cell started, so a leg initialised at 1 stays at 1 while a swept oil
+cell still stops at `1 - Sor`.
+
+What it changed, and what it did not: the flow is almost untouched - 1,873
+swept cells against 1,851, the same contact positions, the same well rates
+to the psi - because the spurious oil was removed on the first step and
+barely interacted with the flood. The *seismic* changed completely. The
+combined near-stack NRMS falls from 23.15 % to 13.65 %: nearly half of what
+was being reported as 4D signal was the aquifer relaxing out of a state the
+initialisation should never have put it in.
+
+
 ## The 4D result
 
 NRMS against the baseline, per scenario and angle stack:
 
 | scenario | near | mid | far |
 |---|---|---|---|
-| pressure only | 8.72 | 8.25 | 7.97 |
-| saturation only | 22.53 | 24.38 | 27.57 |
-| combined | 23.15 | 25.02 | 28.38 |
+| pressure only | 8.61 | 8.12 | 7.81 |
+| saturation only | 10.81 | 11.39 | 12.29 |
+| combined | 13.65 | 13.54 | 13.65 |
 
-Noise floor 4.6 % (6 % of signal RMS at 70 % repeatability), so every number
-above is signal.
-
-An earlier geometry, differing only in how widely and finely y was sampled,
-gave 12.78 / 24.90 / 27.18 for the three near-stack figures. Nothing in the
-model varies along y — the dip is along x — so the per-column physics is
-identical and only the cube-wide average moved, by two to four NRMS points.
-Worth stating plainly: a whole-volume NRMS is a property of the volume you
-chose as much as of the change you modelled, and it is not comparable
-between two runs on different grids.
+Noise floor 4.65 % (6 % of signal RMS at 70 % repeatability), so every
+number above is signal.
 
 **The AVO separates the two causes, and in opposite directions.** The
-saturation response *grows* with angle, 24.90 to 30.52; the pressure
-response *falls*, 12.78 to 10.58. That is the discriminator the angle stacks
+saturation response *grows* with angle, 10.81 to 12.29; the pressure
+response *falls*, 8.61 to 7.81. That is the discriminator the angle stacks
 exist for: a far-stack difference that brightens is fluid, one that dims is
-pressure.
+pressure. The combined stack is flat across angle - 13.65, 13.54, 13.65 -
+which is not an absence of AVO but the two trends cancelling, and it is the
+reason to carry the decomposition rather than the combined case alone.
+
+A whole-volume NRMS is also a property of the volume you chose as much as
+of the change you modelled: most of this cube is barren overburden, and
+these figures are diluted by exactly that. They are comparable with each
+other, and not with a number measured over a different volume.
 
 **The time shifts are negligible and that is the useful finding.** The true
-shift peaks at 1.28 ms and the windowed estimate recovers it to 0.61 ms RMS.
-Aligning the monitor before differencing moves the combined near-stack NRMS
-from 23.15 % to 19.94 % — a real but secondary correction. A 20 m reservoir
-changes too little of the travel path to shift the section below it, so this
-4D is an amplitude signal almost entirely. On a thick or compacting
-reservoir the same code gives the opposite answer: 6 ms of shift alone
-manufactures 58 % NRMS.
+shift peaks at 1.07 ms and the windowed estimate recovers it to 0.38 ms
+RMS. Aligning the monitor before differencing moves the combined near-stack
+NRMS from 13.65 % to 11.55 % - a real but secondary correction. A 20 m
+reservoir changes too little of the travel path to shift the section below
+it, so this 4D is an amplitude signal almost entirely. On a thick or
+compacting reservoir the same code gives the opposite answer: 6 ms of shift
+alone manufactures 58 % NRMS.
+
 
 ## Figures
 
@@ -142,25 +171,36 @@ slowest of them, because each survey has its own velocity and so its own
 deepest two-way time, and letting each end at its own would put the
 monitors on axes the baseline cannot be subtracted from.
 
-| day | traces with a 4D response above 10 % of peak | flow contact |
-|---|---|---|
-| 365 | 50 | x = 500 m |
-| 730 | 56 | x = 460 m |
-| 1095 | 62 | x = 430 m |
+| day | the 4D anomaly | peak amplitude | flow contact |
+|---|---|---|---|
+| 365 | x = 490 to 530 m | 18.9 % | x = 500 m |
+| 730 | x = 450 to 530 m | 27.5 % | x = 460 m |
+| 1095 | x = 410 to 530 m | 28.2 % | x = 430 m |
 
-**The peak saturates and the extent grows.** The largest 4D amplitude is
-28.4 %, 28.1 % and 28.2 % of the baseline peak at the three dates -
-essentially unchanged. That is not a flat response: wherever the front has
-passed, the oil-to-water substitution is *complete*, so the amplitude
-change there is maxed out from the first year. What advances is the edge of
-the anomaly, and it advances in step with the contact the flow simulation
-puts there - two calculations that share no code agreeing on the same
-front.
+*Anomaly: the contiguous run of traces whose 4D difference exceeds 10 % of
+the baseline's peak amplitude. Peak amplitude: the largest 4D difference on
+the section, as a percentage of that same baseline peak.*
 
-Reading the anomaly's updip edge directly is harder than it looks: a
-threshold on trace amplitude picks up a small edge-of-model artefact at
-x = 0 before it reaches the front, which is why the table counts affected
-traces rather than quoting an edge position.
+**The anomaly is pinned at one end and advances at the other.** Its downdip
+edge does not move: 530 m at every date, because that is where the contact
+started and there is nothing to change downdip of it. Its updip edge runs
+490 -> 450 -> 410 m, tracking the contact the flow simulation puts at
+500 -> 460 -> 430 m - about 20 m ahead of it, which is the right direction
+and the right size. A trace lights up as soon as *any* water enters the
+column; the column-averaged contact needs half of it. Two calculations that
+share no code, agreeing on the same front to within two cells.
+
+**The peak grows and then saturates**, 18.9 % to 27.5 % to 28.2 %. The first
+year is the anomaly filling in; after that, wherever the front has passed
+the oil-to-water substitution is *complete*, so the amplitude change there
+is maxed out and only the swept area grows.
+
+There is also a single bright trace at x = 0 and one or two isolated ones
+updip of the flood, at x = 280 and 330 m. They are the edge of the model
+and the pressure response respectively, not the flood, which is why the
+table quotes the contiguous run rather than a count of traces over a
+threshold.
+
 
 ## Why the 4D difference is a doublet
 
@@ -171,8 +211,8 @@ One trace at x = 470 m, where the response is strongest:
 | | AI |
 |---|---|
 | sand, day 0 | 4,997,368 |
-| sand, day 1095 | 5,387,685 (+7.8 %) |
-| surrounding shale | 7,289,456 |
+| sand, day 1095 | 5,387,663 (+7.8 %) |
+| shale just above | 7,223,683 |
 
 Water hardens the sand - Sw goes 0.18 to 0.67 and impedance rises 7.8 % -
 and the depletion helps in the same direction, since falling pore pressure
@@ -181,20 +221,37 @@ is a *trough*, not a peak, and hardening the sand shrinks that contrast:
 
 | | baseline | monitor | difference |
 |---|---|---|---|
-| sand top, 1.452 s | -0.26 | -0.22 | **+0.08, a peak** |
-| sand base, 1.466 s | +0.26 | +0.20 | **-0.055, a trough** |
+| sand top, 1.452 s | -0.263 | -0.200 | **+0.063, a peak** |
+| sand base, 1.466 s | +0.242 | +0.206 | **-0.036, a trough** |
 
 Opposite signs at the two interfaces, because a harder sand shrinks the
 contrast at both - and the contrasts have opposite polarity to begin with.
-The reflection coefficient at the top goes from -0.187 to -0.150.
+The reflection coefficient at the top goes from -0.182 to -0.146.
 
 They do not appear as two events because the sand is **13.6 ms thick**
 two-way, far shorter than the wavelet. The two opposite-signed changes
 interfere into a single doublet that is close to the wavelet's derivative
 scaled by the bed thickness. That is a thin-bed impedance response, not a
-time shift: the measured shifts peak at 1.28 ms, nowhere near enough to
+time shift: the measured shifts peak at 1.07 ms, nowhere near enough to
 produce this amplitude, and a shift would move both interfaces the same way
 rather than opposite ways.
+
+**Water makes a peak at the top, everywhere the flood has reached.** That is
+worth stating because it was not always true here. Reading the difference
+trace sample by sample at x = 470, 500 and 520 m - the swept section - each
+one leads with a positive lobe of +0.077, +0.054 and +0.071, then a
+negative one of the same size about 20 ms later. The only thing ahead of
+the positive lobe is the Ormsby's own leading sidelobe, a tenth to a
+quarter of its size, which is a property of the wavelet and not of the
+flood. Downdip of about 550 m the response collapses to 2 % of the baseline
+peak - the aquifer was already wet and nothing happened to it.
+
+The record used to show a polarity flip at x = 520, trough-then-peak
+downdip of the front. It was not physics. It was the manufactured oil in
+the water leg being produced away, an impedance *decrease* where the real
+flood gives an increase, and it reversed the doublet everywhere beyond the
+front. The flip is gone with the clamp that caused it.
+
 
 ## The migration
 
