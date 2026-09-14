@@ -50,7 +50,10 @@ domains:
   propagation_spacing: [10.0, 10.0, 10.0]
   # The imaging window covers the middle of the dip range, including the
   # contact at x = 560 m, and leaves the survey room to reach past it.
-  target_bounds: [[250, 750], [500, 900], [1500, 2500]]
+  # Trimmed 20 m each side relative to the sim2seis variant: narrowing y to
+  # afford isotropic 10 m sampling cost aperture, and a shipped configuration
+  # should clear its own coverage check rather than ship a warning.
+  target_bounds: [[270, 730], [520, 880], [1500, 2500]]
 
 geology:
   template: three_layer
