@@ -282,18 +282,6 @@ class Pipeline:
             self.result.notes += [f"rates: {w}" for w in self.result.rate_warnings]
         return self.result.controls
 
-    def _water_leg_saturation(self) -> float:
-        """How wet the water leg may be, given what will simulate it.
-
-        A flow simulation clamps saturation into the Corey endpoints every
-        step, so a water leg initialised at 1 is pulled to ``1 - sor`` on the
-        first one and the difference shows up as hydrocarbon that was never
-        there.  The mechanistic generator has no such limit.
-        """
-        if self.config.reservoir.source != "flow":
-            return 1.0
-        return 1.0 - float(self.config.simulation.sor)
-
     def baseline_state(self):
         """The initial reservoir state, before any well has produced."""
         if getattr(self, "_baseline", None) is None:
@@ -302,7 +290,7 @@ class Pipeline:
                 self.geology(), pressure_gradient=b.pressure_gradient,
                 datum_pressure=b.datum_pressure, sw=b.sw, sg=b.sg,
                 temperature=b.temperature, owc=b.owc, goc=b.goc,
-                transition=b.transition, sw_max=self._water_leg_saturation())
+                transition=b.transition)
         return self._baseline
 
     def flow_settings(self) -> FlowSettings:

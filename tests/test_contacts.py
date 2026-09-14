@@ -136,38 +136,31 @@ def test_a_contact_reaches_the_pipeline(geology):
     assert state.sw[state.reservoir_mask].min() == pytest.approx(SWIRR)
 
 
-def test_the_water_leg_respects_what_the_flow_model_can_hold():
-    """The bug this pins: a water leg at Sw = 1 is outside the Corey endpoints.
+def test_the_water_leg_is_fully_wet_for_a_flow_simulation_too():
+    """The bug this pins, from the other end.
 
-    The simulator clamps saturation into [swc, 1 - sor] on every step, so a
-    water leg initialised at 1 is pulled to 1 - sor on the first one and the
-    difference appears as hydrocarbon that was never there. On the dipping
-    wedge that manufactured 25 % oil saturation across the entire water leg
-    and a spurious 4D response of -413,000 in impedance - equal and opposite
-    to the real flood signal of +412,000, and it inverted the polarity of the
-    4D difference downdip of the front.
+    A water leg initialised at 1 used to be lowered to ``1 - sor`` before it
+    reached the simulator, because the simulator clamped every cell to that
+    ceiling and would otherwise have invented hydrocarbon on the first step.
+    The clamp is now per cell and the initialisation no longer has to
+    apologise for it: an aquifer below the contact starts fully wet, and
+    stays that way.
     """
     from sim3d.core.config import ExperimentConfig
     from sim3d.experiments.pipeline import Pipeline
 
     config = ExperimentConfig.load("examples/configs/dipping_wedge_4d.yaml")
-    pipeline = Pipeline(config)
-    state = pipeline.baseline_state()
-    ceiling = 1.0 - config.simulation.sor
-    wet = state.reservoir_mask & (state.sw > ceiling + 1e-9)
-    assert not wet.any(), (
-        f"{int(wet.sum())} reservoir cells start above the 1 - sor ceiling of "
-        f"{ceiling}; the flow model will clamp them and invent hydrocarbon")
-    # And the water leg really is at the ceiling, not merely below it.
-    assert state.sw[state.reservoir_mask].max() == pytest.approx(ceiling, abs=1e-6)
-
-
-def test_the_mechanistic_generator_keeps_a_fully_wet_water_leg():
-    """Only a flow simulation has Corey endpoints to respect."""
-    from sim3d.core.config import ExperimentConfig
-    from sim3d.experiments.pipeline import Pipeline
-
-    config = ExperimentConfig.load("examples/configs/dipping_wedge_4d.yaml")
-    config.reservoir.source = "mechanistic"
+    assert config.reservoir.source == "flow"
     state = Pipeline(config).baseline_state()
     assert state.sw[state.reservoir_mask].max() == pytest.approx(1.0)
+    assert state.sw[state.reservoir_mask].min() == pytest.approx(config.reservoir.baseline.sw)
+
+
+def test_a_water_leg_with_residual_oil_can_still_be_asked_for():
+    """``sw_max`` stays available - for a trap that really does hold residual
+    oil below the contact, not as a way round a solver."""
+    z, (sw, so, _) = column(owc=1300.0, goc=None, sw_max=0.75)
+    assert np.allclose(sw[z >= 1300.0], 0.75)
+    assert np.allclose(so[z >= 1300.0], 0.25)
+    with pytest.raises(ConfigError, match="water leg saturation"):
+        column(owc=1300.0, goc=None, sw_max=0.1)

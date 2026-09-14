@@ -143,14 +143,12 @@ def saturation_from_contacts(z: np.ndarray, sw_irreducible: float,
     one would dress a straight line up as measurement.  Zero gives a sharp
     contact.
 
-    ``sw_max`` is the water saturation of the water leg.  It defaults to 1,
-    but a flow simulation cannot hold more water than its relative
-    permeability allows: the Corey model clamps saturation into
-    ``[swc, 1 - sor]`` on every step, so a water leg initialised at 1 is
-    pulled to ``1 - sor`` on the first one and the difference appears as
-    hydrocarbon that was never there.  On this project that manufactured a
-    25% oil saturation across the whole water leg and a spurious 4D
-    response equal and opposite to the real flood.
+    ``sw_max`` is the water saturation of the water leg, and defaults to 1:
+    an aquifer below the oil-water contact has no oil in it.  Lower it only
+    to model a water leg that really does carry residual oil - a re-migrated
+    or partly drained trap - never to accommodate a solver.  The flow model
+    does not require it: its saturation ceiling is per cell and never below
+    where the cell started, so a leg initialised at 1 stays at 1.
     """
     if not 0.0 <= sw_irreducible <= 1.0:
         raise ConfigError(

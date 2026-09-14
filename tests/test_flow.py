@@ -374,3 +374,47 @@ def test_state_at_returns_a_valid_reservoir_state():
     # The flow model has no gas phase, so gas must be left exactly alone.
     assert np.array_equal(state.sg, baseline.sg)
     assert np.any(state.sw > baseline.sw)
+
+
+# ------------------------------------------------ the aquifer keeps its water
+def test_a_fully_wet_cell_is_not_pushed_back_to_the_residual_oil_endpoint():
+    """The bug this pins: ``1 - sor`` is a ceiling for cells that hold oil.
+
+    Residual oil is the oil a waterflood cannot displace.  A cell that never
+    held oil has none to leave behind, so clamping every cell to ``1 - sor``
+    puts oil into the aquifer on the first step that was never in the model.
+    On the dipping wedge that manufactured 25 % oil saturation across the
+    whole water leg and a 4D impedance response of -413,000 in it - equal
+    and opposite to the real flood's +412,000, which inverted the polarity
+    of the 4D difference everywhere downdip of the front and read as a
+    physical result.
+    """
+    geology = slab(shape=(21, 3, 3))
+    settings = FlowSettings(gravity=False)
+    # The injector sits in the aquifer and the producer in the oil column, so
+    # the flood runs from the wet end towards the dry one - the arrangement
+    # that leaves the aquifer with nothing to gain and everything to lose.
+    wells = WellSet([Well("I1", "injector", 400.0, 25.0, (1000.0, 1030.0)),
+                     Well("P1", "producer", 100.0, 25.0, (1000.0, 1030.0))])
+    controls = {"I1": WellControl(ControlMode.WATER_RATE, 1.0e-3),
+                "P1": WellControl(ControlMode.LIQUID_RATE, 1.0e-3)}
+
+    # An oil column updip of x = 250 m and a fully wet aquifer below it.
+    swc = settings.relperm.swc
+    initial = np.full(geology.grid.shape, swc)
+    aquifer = geology.grid.axis(0) > 250.0
+    initial[aquifer] = 1.0
+
+    simulator = FlowSimulator(
+        geology, wells, {w.name: [Completion("slab")] for w in wells}, controls,
+        np.full(geology.grid.shape, 2.0e7), initial, settings)
+    result = simulator.run(120.0, report_every_days=60.0)
+
+    _, saturation = result.at(120.0)
+    assert saturation[aquifer].min() == pytest.approx(1.0), (
+        "the aquifer lost water it had no oil to make room for")
+    # And the ceiling still binds where it should: a swept oil cell stops at
+    # 1 - sor, it does not run on to 1.
+    swept = saturation[~aquifer]
+    assert swept.max() <= 1.0 - settings.relperm.sor + 1e-9
+    assert result.material_balance_error < 1e-8

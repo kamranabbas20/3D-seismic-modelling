@@ -255,6 +255,14 @@ class FlowSimulator:
         swc = self.settings.relperm.swc
         if np.any(self.sw < swc - 1e-9):
             self.sw = np.maximum(self.sw, swc)
+        # Water displaces oil down to the residual-oil endpoint, so `1 - sor`
+        # is the ceiling for a cell that starts with oil in it.  It is not a
+        # ceiling for a cell that starts without any: an aquifer below the
+        # contact has no oil to leave behind, and clamping it to `1 - sor`
+        # would put oil there on the first step that was never in the model.
+        # The ceiling is therefore per cell, and never below where the cell
+        # began.
+        self.sw_ceiling = np.maximum(1.0 - self.settings.relperm.sor, self.sw)
         self.z = (self.grid.axis(2)[None, None, :] * np.ones(self.grid.shape))[self.active]
 
     # ---------------------------------------------------------------- setup
@@ -619,7 +627,7 @@ class FlowSimulator:
         net = self._net_water(flux, rates)
         self.sw = self.sw + dt * net / self.pore_volume
         relperm = self.settings.relperm
-        self.sw = np.clip(self.sw, relperm.swc, 1.0 - relperm.sor)
+        self.sw = np.clip(self.sw, relperm.swc, self.sw_ceiling)
 
     def _limit_timestep(self, dt: float, dt_days: float, rates):
         """Shrink the step so no cell's saturation moves more than allowed."""
