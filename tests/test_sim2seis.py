@@ -217,3 +217,53 @@ def test_an_unknown_stack_name_lists_the_ones_that_exist(grid, wavelet):
     volume = sim2seis_volume(grid, vp, vs, rho, wavelet, DT, t_max=1.0)
     with pytest.raises(KeyError, match="ultra_far"):
         volume.time_cube("ultra_far")
+
+
+# ------------------------------------------------------------------ progress
+def test_the_conversion_reports_progress_per_angle_stack():
+    """One stack is the finest unit of work that finishes in a bounded time.
+
+    Reporting whole scenarios leaves the bar still for a quarter of the run
+    at a time, which reads as nothing happening - which is what it did.
+    """
+    grid = Grid3D(origin=(0.0, 0.0, 1000.0), spacing=(50.0, 50.0, 10.0),
+                  shape=(6, 5, 40))
+    vp = np.full(grid.shape, 2500.0)
+    vp[..., 20:] = 3000.0
+    vs, rho = 0.55 * vp, np.full(grid.shape, 2300.0)
+    wavelet = np.hanning(41)
+    stacks = [{"name": "near", "angles": [0.0, 15.0]},
+              {"name": "far", "angles": [15.0, 30.0]}]
+
+    seen = []
+    sim2seis_volume(grid, vp, vs, rho, wavelet, 0.004, stacks=stacks,
+                    map_to_depth=False,
+                    progress=lambda name, done, total: seen.append(
+                        (name, done, total)))
+    assert [row[0] for row in seen] == ["near", "far"]
+    assert [row[1] for row in seen] == [1, 2]
+    assert {row[2] for row in seen} == {2}
+
+
+def test_the_pipeline_counts_every_scenario_and_stack():
+    """The fraction has to reach 1.0 and never go backwards: a bar that
+    stalls at 75 % is worse than no bar, because it reads as a hang."""
+    from sim3d.core.config import ExperimentConfig
+    from sim3d.experiments.pipeline import Pipeline
+
+    config = ExperimentConfig.load("examples/configs/demo_small.yaml")
+    pipeline = Pipeline(config)
+    seen = []
+    pipeline.sim2seis(progress=lambda name, done, total: seen.append(
+        (name, done, total)))
+
+    expected = len(config.fourd.scenarios) * len(config.sim2seis.stacks)
+    steps = [row for row in seen if row[2] > 1]
+    assert [row[1] for row in steps] == list(range(1, expected + 1))
+    assert steps[-1][1] == steps[-1][2] == expected
+    # The earth models are built before any stack, and are most of the wait
+    # on a cold cache; the bar has to say so rather than sit at zero.
+    assert seen[0][0] == "building the earth models"
+    # Every step names the scenario it is in, or the label is just a number.
+    for name, _, _ in steps:
+        assert any(s in name for s in config.fourd.scenarios), name

@@ -604,6 +604,11 @@ class Pipeline:
         the hours a survey would, and it is never an image.
         """
         if self.result.volumes is None:
+            # The earth models come first and are most of the wait on a cold
+            # cache, so say so rather than leave a bar at zero while they
+            # build.
+            if progress is not None:
+                progress("building the earth models", 0, 1)
             earth = self.rockphysics()
             cfg = self.config.sim2seis
             grid = earth.models["baseline"].grid
@@ -617,17 +622,31 @@ class Pipeline:
                 float(time_from_depth(earth.rock_physics[n].vp, grid.dz).max())
                 for n in self.config.fourd.scenarios)
 
+            # One angle stack of one scenario is the finest unit of work
+            # that finishes in a bounded time, so that is what the count is
+            # in: reporting whole scenarios leaves the bar still for a
+            # quarter of the run at a time.
+            names = list(self.config.fourd.scenarios)
+            per_scenario = max(len(cfg.stacks), 1)
+            total = max(len(names) * per_scenario, 1)
+
             def build() -> dict:
                 out = {}
-                for i, name in enumerate(self.config.fourd.scenarios):
+                done = 0
+                for name in names:
                     rock = earth.rock_physics[name]
+
+                    def tick(stack, index, count, scenario=name):
+                        if progress is not None:
+                            progress(f"{scenario} — {stack}",
+                                     done + index, total)
+
                     out[name] = sim2seis_volume(
                         grid, rock.vp, rock.vs, rock.rho, wavelet, dt,
                         stacks=cfg.stacks, sub_angles=cfg.sub_angles,
                         map_to_depth=cfg.map_to_depth,
-                        t_max=t_max, scenario=name)
-                    if progress is not None:
-                        progress(name, i + 1, len(self.config.fourd.scenarios))
+                        t_max=t_max, scenario=name, progress=tick)
+                    done += per_scenario
                 return out
 
             self.result.volumes = self._timed("sim2seis", build)

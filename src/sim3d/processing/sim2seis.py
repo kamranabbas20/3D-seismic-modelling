@@ -235,7 +235,7 @@ class Sim2SeisVolume:
 def sim2seis_volume(grid: Grid3D, vp, vs, rho, wavelet, dt: float,
                     stacks=None, t_max: float | None = None,
                     sub_angles: int = 5, map_to_depth: bool = True,
-                    scenario: str = "", dtype=np.float32) -> Sim2SeisVolume:
+                    scenario: str = "", dtype=np.float32, *, progress=None) -> Sim2SeisVolume:
     """Convert one earth model into a synthetic seismic volume.
 
     Parameters
@@ -262,6 +262,11 @@ def sim2seis_volume(grid: Grid3D, vp, vs, rho, wavelet, dt: float,
         Storage type for the cubes.  Single precision by default: these
         are display and difference products, and a full-model cube in
         double costs twice the memory for digits nothing reads.
+    progress:
+        Called ``(stack_name, done, total)`` after each angle stack.  One
+        stack is the finest unit of work here that finishes in a bounded
+        time, so it is the honest granularity to report - a bar that only
+        moves when the whole cube is done is a bar that reads as frozen.
     """
     if dt <= 0:
         raise ConfigError(f"dt must be positive, got {dt}")
@@ -279,13 +284,15 @@ def sim2seis_volume(grid: Grid3D, vp, vs, rho, wavelet, dt: float,
     time_cubes: dict[str, np.ndarray] = {}
     depth_cubes: dict[str, np.ndarray] = {}
     notes = []
-    for stack in angle_stacks:
+    for index, stack in enumerate(angle_stacks):
         rc = stacked_reflectivity(vp, vs, rho, stack, sub_angles=sub_angles)
         traces, times, depth = convolve_reflectivity(
             twt, rc, wavelet, dt, nt, map_to_depth=map_to_depth)
         time_cubes[stack.name] = traces.astype(dtype)
         depth_cubes[stack.name] = (depth.astype(dtype) if depth is not None
                                    else np.zeros(grid.shape, dtype=dtype))
+        if progress is not None:
+            progress(stack.name, index + 1, len(angle_stacks))
     if angle_stacks[-1].max_angle > 45.0:
         notes.append(
             f"largest stack reaches {angle_stacks[-1].max_angle:g} deg; the "

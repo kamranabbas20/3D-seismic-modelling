@@ -1441,10 +1441,11 @@ def page_sim2seis() -> None:
     _shift_controls(cfg)
 
     if st.button("Build synthetic volume", type="primary"):
-        progress = st.progress(0.0, text="converting")
+        progress = st.progress(0.0, text="starting — 0%")
 
         def report(name, done, count):
-            progress.progress(min(done / count, 1.0), text=f"{name}")
+            fraction = min(done / max(count, 1), 1.0)
+            progress.progress(fraction, text=f"{name} — {fraction:.0%}")
         try:
             pipe.sim2seis(progress=report)
         except Sim3DError as exc:
