@@ -202,7 +202,29 @@ a domain with no boundary at all - despite being thinner than the usual
 one-to-two-wavelength guidance. Doubling it would double the domain to
 remove 0.024 % of an artefact.
 
-**The artefacts are large and worth naming.** Sources sit at 600 m and
+**The near-field taper, sized properly.** The default is one wavelength,
+126 m here, and it was already on - the artefact simply reaches much
+further. A raised cosine `0.5(1 - cos(pi r/R))` suppresses by only 11 % at
+100 m from a receiver, so the shallow section kept ten times the
+reservoir's RMS.
+
+| extra taper | shallow RMS | reservoir RMS | ratio | 4D NRMS |
+|---|---|---|---|---|
+| none | 1.182 | 0.120 | 9.9 | 29.16 % |
+| 400 m | 0.262 | 0.120 | 2.2 | 29.16 % |
+| **600 m** | 0.133 | 0.120 | **1.1** | 29.16 % |
+| 800 m | 0.079 | 0.120 | 0.7 | 29.16 % |
+
+600 m brings the artefact to parity with the reservoir. It cannot reach the
+target - receivers sit at 620 m and the sand inside the imaging window is
+below 1,790 m - and **the 4D NRMS does not move at all**, because the taper
+is identical in both surveys and cancels exactly in the difference. It
+changes the picture and no measurement, which is what the function claims
+for itself.
+
+![the tapered section](figures/wedge-36_rtm_section_tapered.png)
+
+**The remaining artefacts are worth naming.** Sources sit at 600 m and
 receivers at 620 m, which is 100 m below the top of the propagation domain
 and 20 m inside the absorbing layer's inner edge, so the top of every image
 carries strong near-field ringing. That is the *source*, not the boundary: a

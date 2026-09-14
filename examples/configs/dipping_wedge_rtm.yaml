@@ -151,6 +151,16 @@ source:
   type: ricker
   frequency: 16.0
 
+# The default 1-wavelength taper is 126 m here, and the injection near-field
+# reaches far further than that: the shallow section carries ten times the
+# reservoir's RMS, and a raised cosine only suppresses by 11 % at 100 m from
+# a receiver. 600 m brings the two to parity. It cannot touch the target -
+# receivers sit at 620 m and the sand within the imaging window is below
+# 1,790 m - and it cancels exactly in the 4D difference, so it changes the
+# picture and no measurement.
+imaging:
+  taper_radius: 600.0
+
 sim2seis:
   map_to_depth: true
   time_shifts: true
