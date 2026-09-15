@@ -1,5 +1,7 @@
 """RTM validation (spec section 129): does migrated energy land where it should?"""
 
+from dataclasses import replace
+
 import numpy as np
 import pytest
 
@@ -407,3 +409,54 @@ def test_the_migration_aperture_can_be_limited_by_offset():
     assert gain[4] == pytest.approx(0.0)      # and beyond it
     assert np.array_equal(record.traces, np.ones((5, 32), dtype=np.float32))
     assert any("aperture limited" in n for n in pipeline.result.notes)
+
+
+def test_migrating_the_difference_equals_differencing_the_migrations():
+    """The identity the 4D runner is built on, measured rather than assumed.
+
+    The migration velocity is built from the baseline earth for *both*
+    surveys, so the source wavefield is bit-identical between them. The
+    imaging condition is then linear in the recorded data - the
+    source-illumination denominator depends only on that wavefield, and the
+    Laplacian and the tapers are linear in the image - which makes
+
+        I_monitor - I_baseline == M(d_monitor - d_baseline)
+
+    If that holds, the 4D image is reachable in one migration instead of
+    two, and everything the surveys share cancels in the data domain before
+    any operator touches it. If it does not, `examples/run_migration.py`
+    produces a wrong 4D image, so it is worth a measurement.
+    """
+    def perturb(vp, grid):
+        i, j, k = grid.nearest_index((350.0, 350.0, 406.0))
+        vp[i:i + 2, j:j + 2, k:k + 2] *= 1.10
+        return vp
+
+    grid, settings, background, perturbed = _experiment(perturb)
+    sources, receivers = _acquisition()
+    nt = steps_for_duration(0.42, settings.dt)
+    wavelet = ricker(np.arange(nt) * settings.dt, F0)
+
+    images = {}
+    solvers = {"baseline": AcousticSolver(background, settings, f0=F0),
+               "monitor": AcousticSolver(perturbed, settings, f0=F0)}
+    gathers = {}
+    for name, solver in solvers.items():
+        gathers[name] = [
+            solver.run(PointSource(grid, src, wavelet), nt, receivers=receivers)
+            for src in sources]
+    gathers["difference"] = [
+        replace(b, traces=m.traces - b.traces)
+        for b, m in zip(gathers["baseline"], gathers["monitor"])]
+
+    rtm = RTMSettings(imaging_condition="source_normalized", laplacian_filter=True)
+    for name, records in gathers.items():
+        images[name] = migrate_survey(records, background, wavelet, sources,
+                                      solver_settings=settings, rtm=rtm,
+                                      fmax=3.0 * F0, f0=F0).image.astype(np.float64)
+
+    differenced = images["monitor"] - images["baseline"]
+    migrated = images["difference"]
+    scale = float(np.abs(differenced).max())
+    assert scale > 0.0
+    assert float(np.abs(differenced - migrated).max()) / scale < 1e-3
