@@ -69,6 +69,45 @@ def direct_wave_mute(traces: np.ndarray, offsets: np.ndarray, dt: float,
     return data
 
 
+def offset_mute(traces: np.ndarray, offsets: np.ndarray, max_offset: float,
+                taper: float | None = None) -> np.ndarray:
+    """Taper traces to zero beyond ``max_offset``, limiting the aperture.
+
+    RTM has no per-trace aperture the way a Kirchhoff sum does: the imaging
+    condition correlates two wavefields over the whole grid at once, so the
+    only place to choose which angles are migrated is the gather.  Dropping
+    the far offsets is that choice.
+
+    It matters because the operator aliasing limit ``V / (4 f_max sin θ)``
+    is set by the steepest angle actually summed.  A long receiver line
+    subtends a wide angle at its ends whether or not those angles carry
+    useful energy, and migrating them with trace spacing coarser than the
+    limit leaves each shot's isochrone in the image instead of cancelling
+    it against its neighbours'.  Limiting the aperture raises the limit,
+    which is usually cheaper than shooting to meet it: for a reflector
+    ``h`` below the acquisition, an incidence angle ``θ`` corresponds to an
+    offset of ``2 h tan θ``.
+
+    The cut is cosine-tapered rather than hard, because a step in offset is
+    a step in the summed wavefield and images as its own edge.
+    """
+    data = np.asarray(traces, dtype=float).copy()
+    off = np.asarray(offsets, dtype=float).ravel()
+    if off.size != data.shape[0]:
+        raise ConfigError(f"{off.size} offsets for {data.shape[0]} traces")
+    if max_offset <= 0:
+        raise ConfigError(f"max_offset must be positive, got {max_offset}")
+    width = float(0.2 * max_offset if taper is None else taper)
+    start = max_offset - width
+    weight = np.ones_like(off)
+    if width > 0:
+        ramp = np.clip((off - start) / width, 0.0, 1.0)
+        weight = 0.5 * (1.0 + np.cos(np.pi * ramp))
+    weight[off >= max_offset] = 0.0
+    weight[off <= start] = 1.0
+    return data * weight[:, None]
+
+
 def taper_mute(traces: np.ndarray, start: int, stop: int) -> np.ndarray:
     """Zero samples outside ``[start, stop)`` with a cosine edge."""
     data = np.asarray(traces, dtype=float).copy()

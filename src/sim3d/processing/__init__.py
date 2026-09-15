@@ -18,7 +18,9 @@ from .sim2seis import (
     DEFAULT_STACKS, SIM2SEIS_LABEL, AngleStack, Sim2SeisVolume, aki_richards,
     build_stacks, sim2seis_volume, stacked_reflectivity,
 )
-from .filters import agc, bandpass, direct_wave_mute, normalise, taper_mute
+from .filters import (
+    agc, bandpass, direct_wave_mute, normalise, offset_mute, taper_mute,
+)
 
 __all__ = [
     "PREVIEW_LABEL", "ConvolutionPreview", "convolution_preview", "reflectivity",
@@ -28,5 +30,5 @@ __all__ = [
     "LAYOUTS", "SPARSE_LABEL", "SparseSynthetic", "TraceLocation",
     "locations_from_points", "locations_from_wells", "locations_on_grid",
     "resolve_locations", "snap_to", "sparse_synthetic",
-    "agc", "bandpass", "direct_wave_mute", "normalise", "taper_mute",
+    "agc", "bandpass", "direct_wave_mute", "offset_mute", "normalise", "taper_mute",
 ]

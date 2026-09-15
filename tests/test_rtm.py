@@ -370,3 +370,40 @@ def test_the_direct_arrival_can_be_muted_before_migration():
     # choice, has to start from the data rather than from one view of it.
     assert np.all(record.traces == 1.0)
     assert any("direct arrival muted" in note for note in pipeline.result.notes)
+
+
+def test_the_migration_aperture_can_be_limited_by_offset():
+    """The wiring for the one control that raises the aliasing limit.
+
+    RTM sums the operator over every angle the spread subtends, and
+    ``V / (4 f_max sin theta)`` is set by the steepest of them whether or
+    not those traces carry anything. Dropping the far offsets is the only
+    place that choice can be made, because the imaging condition correlates
+    two whole wavefields rather than summing trace by trace.
+
+    As with the direct-arrival mute, the cached gathers must survive: a
+    different aperture has to start from the data, not from one view of it.
+    """
+    import numpy as np
+    from sim3d.core.config import ExperimentConfig
+    from sim3d.experiments.pipeline import Pipeline
+    from sim3d.wave.acoustic import ShotRecord
+
+    source = (0.0, 0.0, 100.0)
+    # A 500 m cut tapers over the default 20 %, so the band runs 400-500 m.
+    receivers = np.array([[x, 0.0, 100.0]
+                          for x in (0.0, 400.0, 450.0, 500.0, 900.0)])
+    record = ShotRecord(traces=np.ones((5, 32), dtype=np.float32), dt=0.002,
+                        receiver_positions=receivers, source_position=source)
+
+    pipeline = Pipeline(ExperimentConfig.load("examples/configs/demo_small.yaml"))
+    out = pipeline._mute_offsets({"baseline": [record]}, 500.0, None)["baseline"][0]
+
+    gain = out.traces[:, 0]
+    assert gain[0] == pytest.approx(1.0)      # short offset, untouched
+    assert gain[1] == pytest.approx(1.0)      # 400 m, where the taper starts
+    assert gain[2] == pytest.approx(0.5)      # 450 m, half way through it
+    assert gain[3] == pytest.approx(0.0)      # 500 m, the cut itself
+    assert gain[4] == pytest.approx(0.0)      # and beyond it
+    assert np.array_equal(record.traces, np.ones((5, 32), dtype=np.float32))
+    assert any("aperture limited" in n for n in pipeline.result.notes)

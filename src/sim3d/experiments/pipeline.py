@@ -46,7 +46,7 @@ from ..geology.builder import (
 )
 from ..geology.templates import template
 from ..imaging.rtm import RTMSettings, RTMResult, migrate_survey
-from ..processing.filters import direct_wave_mute
+from ..processing.filters import direct_wave_mute, offset_mute
 from ..processing.preview import convolution_preview, time_from_depth
 from ..processing.sim2seis import sim2seis_volume
 from ..processing.sparse import resolve_locations, sparse_synthetic
@@ -552,11 +552,22 @@ class Pipeline:
             for note in notes:
                 result.checks.append(Check(Status.WARNING, note))
         else:
+            # State the factors rather than declaring compliance. `notes()`
+            # stays quiet up to 2x the limit, so a spacing that passes here is
+            # not necessarily at or under it - and a check that rounds that
+            # away is the reason the aliasing went unnoticed in the first
+            # place. The aperture quoted is the full spread; limiting it with
+            # `imaging.max_offset` raises the limit these are measured against.
+            src = report.factor(report.source_spacing)
+            rec = report.factor(report.receiver_spacing)
             result.checks.append(Check(
                 Status.PASS,
                 f"survey samples the migration operator: {report.aperture_deg:.0f} deg "
-                f"aperture, {report.standoff_wavelengths:.1f} wavelengths of standoff, "
-                f"trace spacing within the {report.operator_limit:,.0f} m limit"))
+                f"aperture over the full spread, {report.standoff_wavelengths:.1f} "
+                f"wavelengths of standoff, operator limit "
+                f"{report.operator_limit:,.0f} m - source spacing "
+                f"{report.source_spacing:,.0f} m is {src:.1f}x it, receiver "
+                f"{report.receiver_spacing:,.0f} m is {rec:.1f}x"))
 
     def plan(self, throughput: float | None = None, benchmark: bool = False):
         """Cost estimate and budget check.  Raises rather than degrading."""
@@ -859,6 +870,36 @@ class Pipeline:
             f"as a smile rather than a reflector")
         return out
 
+    def _mute_offsets(self, gathers: dict, max_offset: float,
+                      taper: float | None) -> dict:
+        """Limit the migration aperture by tapering away the far offsets.
+
+        The aliasing limit is set by the steepest angle the migration sums,
+        and a long spread subtends a wide one at its ends regardless of what
+        those traces carry.  Cutting the aperture raises the limit, which is
+        usually cheaper than shooting finely enough to meet it.
+
+        As with the direct-arrival mute, the stored gathers are untouched:
+        the cached originals are what a different imaging choice has to start
+        from.
+        """
+        out = {}
+        for name, records in gathers.items():
+            muted = []
+            for record in records:
+                receivers = np.asarray(record.receiver_positions, dtype=float)
+                source = np.asarray(record.source_position, dtype=float)
+                offsets = np.linalg.norm(receivers - source, axis=1)
+                traces = offset_mute(record.traces, offsets, max_offset, taper)
+                muted.append(replace(record, traces=traces.astype(record.traces.dtype)))
+            out[name] = muted
+        kept = int((offsets < max_offset).sum())
+        self.result.notes.append(
+            f"imaging: aperture limited to {max_offset:,.0f} m of offset "
+            f"({kept} of {offsets.size} traces on the last shot), which raises "
+            f"the operator aliasing limit that the far offsets would otherwise set")
+        return out
+
     def migration_model(self, true_model: AcousticModel) -> AcousticModel:
         """Build the migration velocity model (spec sections 76-78).
 
@@ -923,6 +964,8 @@ class Pipeline:
         settings = self.solver_settings(dt)
         if cfg.mute_direct_arrival:
             gathers = self._mute_direct(gathers, migration, cfg.mute_pad)
+        if cfg.max_offset is not None:
+            gathers = self._mute_offsets(gathers, cfg.max_offset, cfg.offset_taper)
         start = time.perf_counter()
         for name, records in gathers.items():
             self.result.images[name] = migrate_survey(

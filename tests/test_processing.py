@@ -194,3 +194,27 @@ def test_the_depth_registration_does_not_drift_with_frequency():
         peak = grid.axis(2)[np.argmax(np.abs(cube.depth_traces[1, 1]))]
         offsets.append(peak - (120 - 0.5) * grid.dz)
     assert abs(offsets[0] - offsets[1]) <= grid.dz
+
+
+def test_the_offset_mute_tapers_rather_than_cutting():
+    """A hard offset cut is a step in the summed wavefield and images as one."""
+    from sim3d.processing.filters import offset_mute
+
+    traces = np.ones((6, 8))
+    offsets = np.array([0.0, 300.0, 400.0, 450.0, 500.0, 900.0])
+    out = offset_mute(traces, offsets, max_offset=500.0)
+    gain = out[:, 0]
+    assert gain[0] == pytest.approx(1.0)          # near offsets untouched
+    assert gain[2] == pytest.approx(1.0)          # taper starts at 400 m
+    assert gain[3] == pytest.approx(0.5)          # half way through the taper
+    assert gain[4] == pytest.approx(0.0)          # zero at the cut
+    assert gain[5] == pytest.approx(0.0)          # and beyond it
+    assert np.all(np.diff(gain) <= 1e-12)         # monotone: no step back up
+
+
+def test_the_offset_mute_rejects_a_mismatched_offset_count():
+    from sim3d.core.errors import ConfigError
+    from sim3d.processing.filters import offset_mute
+
+    with pytest.raises(ConfigError, match="offsets for"):
+        offset_mute(np.ones((3, 4)), np.array([0.0, 100.0]), max_offset=50.0)

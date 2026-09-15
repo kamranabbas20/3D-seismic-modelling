@@ -320,6 +320,17 @@ class ImagingConfig:
     mute_direct_arrival: bool = False
     #: Seconds after the direct arrival at which the mute reaches full gain.
     mute_pad: float = 0.02
+    #: Limit the migration aperture by tapering offsets beyond this, metres.
+    #: ``None`` migrates every trace, which means the operator is summed over
+    #: the full angle the spread subtends - and the aliasing limit
+    #: ``V / (4 f_max sin theta)`` is set by that angle whether or not the
+    #: steep traces carry anything.  For a reflector ``h`` below the
+    #: acquisition, an incidence angle ``theta`` is an offset of
+    #: ``2 h tan(theta)``.
+    max_offset: float | None = None
+    #: Cosine taper width on that cut, metres.  ``None`` uses 20 % of
+    #: ``max_offset``; a hard cut images as its own edge.
+    offset_taper: float | None = None
 
     def __post_init__(self) -> None:
         if self.method.upper() not in {m.upper() for m in IMAGING_METHODS}:
