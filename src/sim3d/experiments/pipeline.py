@@ -23,7 +23,7 @@ from pathlib import Path
 
 import numpy as np
 
-from ..acquisition.geometry import Acquisition, OBNGeometry
+from ..acquisition.geometry import Acquisition, OBNGeometry, sampling_report
 from ..core.config import ExperimentConfig
 from ..core.errors import ConfigError
 from ..core.grid import DomainSet
@@ -59,7 +59,7 @@ from ..reservoir.state import initial_state
 from ..rockphysics.model import RockPhysicsConfig
 from ..rockphysics.pressure import PressureModel
 from ..validation.qc import (
-    QCResult, check_geometry, check_layer_connectivity, check_model,
+    Check, QCResult, Status, check_geometry, check_layer_connectivity, check_model,
     check_state,
 )
 from ..wave.acoustic import (
@@ -527,8 +527,36 @@ class Pipeline:
             check_geometry(self.acquisition(), self.domains.propagation,
                            self.config.solver.pml_nodes, result,
                            target=self.domains.target)
+            self._check_sampling(models["baseline"], result)
             self.result.qc = result
         return self.result.qc
+
+    def _check_sampling(self, model: AcousticModel, result: QCResult) -> None:
+        """Aperture, standoff and operator aliasing for the survey as configured.
+
+        :func:`sampling_report` used to be reachable only from the GUI, so a
+        headless run could alias its migration operator by a factor of five
+        and say nothing about it.  That is the failure this project keeps
+        paying for: the image fills with arcs, and the arcs get blamed on the
+        velocity, on the direct arrival, on the near-field - on everything
+        except the trace spacing, which is the one number that was known
+        before a single wavefield was propagated.
+        """
+        (_, _), (_, _), (z_top, _) = self.domains.target.bounds
+        report = sampling_report(
+            self.acquisition(), float(z_top), float(np.median(model.vp)), self.fmax,
+            self.config.acquisition.source_spacing,
+            self.config.acquisition.receiver_spacing)
+        notes = report.notes()
+        if notes:
+            for note in notes:
+                result.checks.append(Check(Status.WARNING, note))
+        else:
+            result.checks.append(Check(
+                Status.PASS,
+                f"survey samples the migration operator: {report.aperture_deg:.0f} deg "
+                f"aperture, {report.standoff_wavelengths:.1f} wavelengths of standoff, "
+                f"trace spacing within the {report.operator_limit:,.0f} m limit"))
 
     def plan(self, throughput: float | None = None, benchmark: bool = False):
         """Cost estimate and budget check.  Raises rather than degrading."""

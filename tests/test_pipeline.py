@@ -536,12 +536,46 @@ def test_a_narrow_survey_warns_rather_than_blocks_the_run():
     assert not Pipeline(config).geometry_qc().failed
 
 
+#: Configurations whose survey cannot reach the margin, with the reason.
+#: An entry here is a documented trade-off, not a licence to under-size:
+#: every other configuration must still pass.
+COVERAGE_EXCEPTIONS = {
+    # Target x runs 200-1,400 m inside a 0-1,992 m domain whose 10-node PML
+    # eats 120 m from each end, so the westernmost a source can sit is 120 m
+    # - 80 m short of the 100 m margin, before any choice about the survey.
+    # The configuration says so in its own header.
+    "five_layer_2d_wide.yaml",
+}
+
+
 def test_every_shipped_configuration_covers_its_target():
     """The regression this check was written for: four of the six example
     configurations sized the survey to the target or narrower."""
     for path in sorted(pathlib.Path("examples/configs").glob("*.yaml")):
         check = _coverage(ExperimentConfig.load(path))
+        if path.name in COVERAGE_EXCEPTIONS:
+            assert check.status is Status.WARNING, (
+                f"{path.name} is listed as a documented exception but now "
+                f"passes - remove it from COVERAGE_EXCEPTIONS")
+            continue
         assert check.status is Status.PASS, f"{path.name}: {check.message}"
+
+
+def test_a_line_survey_is_judged_on_the_axis_it_shoots():
+    """A 2.5D line is narrow crossline by construction, not by mistake.
+
+    Judging both axes by one worst-case margin reported every line survey as
+    under-sized, which is how a real under-sizing gets lost in the noise.
+    """
+    config = tiny_config()
+    (x0, x1), (y0, y1), _ = Pipeline(config).domains.target.bounds
+    config.acquisition.receiver_extent = (x1 - x0) + 600.0
+    config.acquisition.source_extent = (x1 - x0) + 600.0
+    config.acquisition.receiver_extent_y = 1.0          # one line
+    config.acquisition.source_extent_y = 1.0
+    check = _coverage(config)
+    assert check.status is Status.PASS, check.message
+    assert "crossline is a single line" in check.message
 
 
 def test_a_domain_too_small_for_its_absorbing_layer_says_so():
@@ -554,3 +588,18 @@ def test_a_domain_too_small_for_its_absorbing_layer_says_so():
     config.acquisition.receiver_extent = None
     with pytest.raises(ConfigError, match="no interior left"):
         Pipeline(config).acquisition()
+
+
+def test_the_full_qc_reports_on_operator_aliasing(pipeline):
+    """A scripted run must say when the trace spacing aliases the operator.
+
+    ``sampling_report`` was reachable only from the Streamlit page, so every
+    headless run migrated with whatever spacing the config happened to carry
+    and said nothing about it. Arcs in the image then get blamed on the
+    migration velocity, on the direct arrival, on the near-field - on
+    everything except the one number that was knowable before a single
+    wavefield was propagated.
+    """
+    messages = [c.message for c in pipeline.qc().checks]
+    assert any("operator" in m for m in messages), \
+        f"no operator-sampling check among {len(messages)} checks"

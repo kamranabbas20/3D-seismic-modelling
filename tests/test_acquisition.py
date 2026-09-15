@@ -196,3 +196,29 @@ def test_the_line_survey_reaches_the_pipeline():
     sources = np.asarray(acquisition.sources, dtype=float)
     assert len(set(sources[:, 1])) == 1, "five_layer_2d must shoot a single line"
     assert len(sources) < 15, "and far fewer shots than the 3D carpet"
+
+
+def test_the_sampling_report_catches_a_coarsely_shot_line():
+    """The 600 m five-layer survey is aliased, and the report must say so.
+
+    19 shots at 100 m over a 69-degree aperture against an 18 m operator
+    limit: 5.4x coarse. This is the geometry whose migrated image filled
+    with arcs, and the number was available before any of it was run.
+    """
+    from sim3d.acquisition.geometry import OBNGeometry, sampling_report
+
+    acquisition = OBNGeometry(
+        centre=(1000.0, 1000.0), receiver_spacing=60.0, receiver_extent=1820.0,
+        source_spacing=100.0, source_extent=1800.0, receiver_depth=300.0,
+        source_depth=120.0, receiver_extent_y=120.0, source_extent_y=1.0,
+    ).build()
+    report = sampling_report(acquisition, target_depth=600.0, velocity=2976.0,
+                             fmax=43.1, source_spacing=100.0, receiver_spacing=60.0)
+    assert report.operator_limit == pytest.approx(18.5, abs=1.0)
+    assert report.factor(100.0) > 5.0
+    notes = report.notes()
+    assert any("source spacing" in n and "operator limit" in n for n in notes)
+    # Sampled at the limit the same geometry has nothing to report.
+    fine = sampling_report(acquisition, target_depth=600.0, velocity=2976.0,
+                           fmax=43.1, source_spacing=18.0, receiver_spacing=18.0)
+    assert not fine.notes()

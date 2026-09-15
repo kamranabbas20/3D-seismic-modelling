@@ -239,16 +239,36 @@ def check_geometry(acquisition, grid: Grid3D, pml_nodes: int,
 MIN_TARGET_MARGIN = 100.0
 
 
+#: Below this ratio of crossline to inline footprint the survey is a line,
+#: not a patch, and its crossline narrowness is the design rather than an
+#: oversight.
+LINE_SURVEY_RATIO = 0.25
+
+
 def check_target_coverage(acquisition, target: Grid3D,
                           result: QCResult | None = None) -> QCResult:
-    """Report how far the survey footprint reaches beyond the target."""
+    """Report how far the survey footprint reaches beyond the target.
+
+    The two axes are judged separately.  Collapsing them into one worst-case
+    margin cannot tell a survey that is short of its target from a 2.5D line
+    survey, whose crossline footprint is *deliberately* the width of the
+    receiver line and nothing more - and reporting the second as though it
+    were the first trains the reader to ignore the check.
+    """
     result = result or QCResult()
     points = np.vstack([np.asarray(acquisition.sources, dtype=float),
                         np.asarray(acquisition.receivers, dtype=float)])
     (tx0, tx1), (ty0, ty1), _ = target.bounds
-    margins = (tx0 - points[:, 0].min(), points[:, 0].max() - tx1,
-               ty0 - points[:, 1].min(), points[:, 1].max() - ty1)
-    worst = float(min(margins))
+    inline = float(min(tx0 - points[:, 0].min(), points[:, 0].max() - tx1))
+    crossline = float(min(ty0 - points[:, 1].min(), points[:, 1].max() - ty1))
+
+    spans = np.ptp(points[:, :2], axis=0)
+    is_line = bool(spans[0] > 0 and spans[1] / spans[0] < LINE_SURVEY_RATIO)
+    # A line survey is judged on the axis it actually shoots. The crossline
+    # is still reported, because nothing off the line is illuminated and an
+    # image of anything with out-of-plane structure would be mispositioned.
+    worst = inline if is_line else min(inline, crossline)
+
     # A warning, not a failure: sim3d reserves FAIL for what cannot proceed,
     # and an under-sized survey models and migrates perfectly well - it just
     # produces an image whose edges nobody should read.
@@ -258,9 +278,13 @@ def check_target_coverage(acquisition, target: Grid3D,
         status, verdict = Status.WARNING, "barely reaches past the target"
     else:
         status, verdict = Status.PASS, "extends past the target on every side"
-    result.add(status,
-               f"survey {verdict}: {worst:,.0f} m of footprint beyond the "
-               f"narrowest edge")
+    if is_line:
+        detail = (f"{inline:,.0f} m of footprint beyond the target inline; "
+                  f"crossline is a single line ({crossline:,.0f} m beyond), "
+                  f"so nothing off it is illuminated")
+    else:
+        detail = f"{worst:,.0f} m of footprint beyond the narrowest edge"
+    result.add(status, f"survey {verdict}: {detail}")
     return result
 
 
