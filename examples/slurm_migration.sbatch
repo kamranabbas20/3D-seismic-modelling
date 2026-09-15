@@ -31,7 +31,7 @@ set -euo pipefail
 #
 #   sbatch examples/slurm_migration.sbatch
 #   sbatch examples/slurm_migration.sbatch my_survey.yaml
-#   sbatch examples/slurm_migration.sbatch my_survey.yaml runs/mine
+#   sbatch examples/slurm_migration.sbatch my_survey.yaml runs/mine difference
 #   CONFIG=my_survey.yaml sbatch --export=ALL,CONFIG examples/slurm_migration.sbatch
 #
 # Arguments are the simplest. Prefer them unless your site sets
@@ -41,6 +41,11 @@ CONFIG="${1:-${CONFIG:-examples/configs/five_layer_600m_dense.yaml}}"
 # Must be a shared filesystem, not node-local scratch: the checkpoints are the
 # whole point, and a requeued job can land on a different node.
 OUT="${2:-${OUT:-$SLURM_SUBMIT_DIR/runs/dense}}"
+# difference | baseline | both. The difference IS the 4D image and costs half
+# of "both"; add the baseline when the structural image is wanted too. Either
+# can be added later - the per-shot checkpoints make the second pass resume
+# rather than restart.
+MIGRATE="${3:-${MIGRATE:-both}}"
 
 cd "$SLURM_SUBMIT_DIR"
 mkdir -p logs "$OUT"
@@ -58,6 +63,7 @@ echo "job $SLURM_JOB_ID on $(hostname), ${SLURM_CPUS_PER_TASK} cpus, "\
      "restart #${SLURM_RESTART_COUNT:-0}, started $(date -Is)"
 echo "config: $CONFIG"
 echo "output: $OUT"
+echo "migrate: $MIGRATE"
 
 # --- run --------------------------------------------------------------------
 on_time_limit() {
@@ -70,7 +76,7 @@ trap on_time_limit USR1
 # Backgrounded and waited on deliberately: a trap does not fire while the
 # shell is blocked in a foreground child, so `python ...` on its own would
 # ignore USR1 until the process it was waiting for had already been killed.
-python examples/run_migration.py "$CONFIG" --out "$OUT" &
+python examples/run_migration.py "$CONFIG" --out "$OUT" --migrate "$MIGRATE" &
 PYTHON_PID=$!
 
 # `wait` returns as soon as a trapped signal is handled, before the child has

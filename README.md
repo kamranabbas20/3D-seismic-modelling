@@ -163,6 +163,11 @@ experiment rather than a guess.
 to the core count and then fight over it; two such jobs on four cores
 measured a 13x slowdown here.
 
+`--migrate difference` migrates only the 4D and costs half of the default
+`both`; `--migrate baseline` adds the structural image. Either can be added
+afterwards - the per-shot checkpoints make the second pass resume rather
+than restart, and the result is identical to having asked for both at once.
+
 Into `--out` it writes `images.npz`, a depth section and a map view per
 scenario, an illumination panel, and the `fwd/` and `mig/` checkpoints.
 Figures need matplotlib and nothing else - no browser, no display, no X

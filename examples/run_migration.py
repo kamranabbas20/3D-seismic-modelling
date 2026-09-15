@@ -95,6 +95,11 @@ def parse_args(argv=None) -> argparse.Namespace:
                    help="ignore any existing checkpoints and start over")
     p.add_argument("--force", action="store_true",
                    help="proceed even if QC fails")
+    p.add_argument("--migrate", default="both",
+                   choices=("difference", "baseline", "both"),
+                   help="which images to migrate. 'difference' is the 4D and is "
+                        "what most runs want; 'baseline' adds the structural "
+                        "image at roughly double the cost")
     p.add_argument("--no-figures", action="store_true",
                    help="write the .npz only, skipping the PNGs")
     p.add_argument("--dpi", type=int, default=140, help="figure resolution")
@@ -292,12 +297,14 @@ def main(argv=None) -> int:
     # than only of the combined one. The baseline goes last: the differences
     # are what the run is for.
     to_migrate = {}
-    for name in scenarios[1:]:
-        to_migrate[f"difference_{name}"] = [
-            replace(b, traces=(m.traces.astype(np.float64)
-                               - b.traces.astype(np.float64)).astype(b.traces.dtype))
-            for b, m in zip(base_records, gathers[name])]
-    to_migrate["baseline"] = base_records
+    if args.migrate in ("difference", "both"):
+        for name in scenarios[1:]:
+            to_migrate[f"difference_{name}"] = [
+                replace(b, traces=(m.traces.astype(np.float64)
+                                   - b.traces.astype(np.float64)).astype(b.traces.dtype))
+                for b, m in zip(base_records, gathers[name])]
+    if args.migrate in ("baseline", "both"):
+        to_migrate["baseline"] = base_records
 
     if config.imaging.mute_direct_arrival:
         to_migrate = pipeline._mute_direct(to_migrate, migration,
@@ -335,10 +342,12 @@ def main(argv=None) -> int:
 
     # The image filters are linear, so they go after the stack rather than per
     # shot: identical result, and one pass instead of n_shots of them.
+    # Taper geometry comes from the acquisition, not from whichever gather
+    # happens to have been migrated: --migrate difference leaves no baseline
+    # entry, and the taper must not change with that choice.
     points = np.concatenate(
-        [np.asarray(acquisition.sources, float).reshape(-1, 3)]
-        + [np.asarray(r.receiver_positions, float).reshape(-1, 3)
-           for r in to_migrate["baseline"]])
+        [np.asarray(acquisition.sources, float).reshape(-1, 3),
+         np.asarray(acquisition.receivers, float).reshape(-1, 3)])
     wavelength = float(migration.vp.min()) / config.source.frequency
     images = {}
     for name, (image, illum) in stacks.items():
@@ -350,27 +359,51 @@ def main(argv=None) -> int:
                                    wavelength=wavelength)
         images[name] = result
 
-    baseline = images["baseline"].astype(float)
-    saved = {"baseline": baseline, "origin": np.array(grid.origin),
-             "spacing": np.array(grid.spacing)}
+    saved = {"origin": np.array(grid.origin), "spacing": np.array(grid.spacing)}
+    baseline = images["baseline"].astype(float) if "baseline" in images else None
+    if baseline is not None:
+        saved["baseline"] = baseline
     for name in scenarios[1:]:
-        fourd = images[f"difference_{name}"].astype(float)
-        saved[f"difference_{name}"] = fourd
-        saved[f"monitor_{name}"] = baseline + fourd
+        key = f"difference_{name}"
+        if key not in images:
+            continue
+        fourd = images[key].astype(float)
+        saved[key] = fourd
+        # A monitor image only exists where the baseline was migrated too:
+        # the monitor is the baseline plus the difference, and inventing one
+        # from a difference alone would be a picture of nothing.
+        if baseline is not None:
+            saved[f"monitor_{name}"] = baseline + fourd
     destination = out / "images.npz"
     np.savez_compressed(destination, **saved)
-    log(f"wrote {destination}  image {baseline.shape} "
-        f"spacing {grid.spacing} origin {grid.origin}")
+    shape = next(v for k, v in saved.items()
+                 if k not in ("origin", "spacing")).shape
+    log(f"wrote {destination}  {sorted(k for k in saved if k not in ('origin', 'spacing'))} "
+        f"  image {shape} spacing {grid.spacing} origin {grid.origin}")
 
     xs, ys, zs = grid.axis(0), grid.axis(1), grid.axis(2)
     (x0, x1), (y0, y1), (z0, z1) = pipeline.domains.target.bounds
-    mask = np.zeros(baseline.shape, bool)
+    mask = np.zeros(grid.shape, bool)
     mask[np.ix_((xs >= x0) & (xs <= x1), (ys >= y0) & (ys <= y1),
                 (zs >= z0) & (zs <= z1))] = True
     for name in scenarios[1:]:
-        monitor = baseline + images[f"difference_{name}"].astype(float)
-        log(f"{name:16s} 4D NRMS {nrms(baseline, monitor):6.2f} % whole volume, "
-            f"{nrms(baseline, monitor, mask=mask):6.2f} % in the target window")
+        key = f"difference_{name}"
+        if key not in images:
+            continue
+        fourd = images[key].astype(float)
+        if baseline is not None:
+            monitor = baseline + fourd
+            log(f"{name:16s} 4D NRMS {nrms(baseline, monitor):6.2f} % whole volume, "
+                f"{nrms(baseline, monitor, mask=mask):6.2f} % in the target window")
+        else:
+            # NRMS is normalised by the baseline image, so without one the
+            # honest summary is the 4D energy in the target window against
+            # the 4D energy outside it - a ratio of the difference to itself,
+            # which needs no baseline and says the same thing about focus.
+            inside = float(np.sqrt(np.mean(fourd[mask] ** 2)))
+            outside = float(np.sqrt(np.mean(fourd[~mask] ** 2)))
+            log(f"{name:16s} 4D RMS {inside:.4e} in the target window, "
+                f"{outside:.4e} outside it, ratio {inside / outside:.1f}")
 
     if not args.no_figures:
         render(out, images, stacks, grid, pipeline, config, scenarios, args, log)
@@ -399,20 +432,27 @@ def render(out, images, stacks, grid, pipeline, config, scenarios, args, log):
     # both to the same thing.
     wells = [(float(w.x), float(w.y), str(w.name)) for w in pipeline.wells()]
 
-    baseline = images["baseline"].astype(float)[:, iy, :][:, band]
-    limit = float(np.abs(baseline).max()) or 1.0
+    have_baseline = "baseline" in images
+    baseline = (images["baseline"].astype(float)[:, iy, :][:, band]
+                if have_baseline else None)
+    limit = float(np.abs(baseline).max()) or 1.0 if have_baseline else 1.0
 
     for name in scenarios[1:]:
+        if f"difference_{name}" not in images:
+            continue
         fourd = images[f"difference_{name}"].astype(float)[:, iy, :][:, band]
-        monitor = baseline + fourd
         # Baseline and monitor share one scale or the eye reads the rescaling
         # as a change in the earth. The difference gets its own: it is a
         # different quantity, and on the shared scale it would be invisible.
-        panels = ((baseline, limit, "baseline"),
-                  (monitor, limit, f"monitor - {name}"),
-                  (fourd, float(np.abs(fourd).max()) or 1.0, "4D difference"))
-        fig, axes = plt.subplots(1, 3, figsize=(15, 5.2), sharey=True,
-                                 facecolor="#fcfcfb")
+        if have_baseline:
+            panels = ((baseline, limit, "baseline"),
+                      (baseline + fourd, limit, f"monitor - {name}"),
+                      (fourd, float(np.abs(fourd).max()) or 1.0, "4D difference"))
+        else:
+            panels = ((fourd, float(np.abs(fourd).max()) or 1.0, "4D difference"),)
+        fig, axes = plt.subplots(1, len(panels), figsize=(5 * len(panels), 5.2),
+                                 sharey=True, squeeze=False, facecolor="#fcfcfb")
+        axes = axes[0]
         for ax, (data, scale, title) in zip(axes, panels):
             _section(ax, data, xs, z, seismic, scale, title, horizons,
                      [(x, name) for x, _, name in wells])
@@ -434,10 +474,13 @@ def render(out, images, stacks, grid, pipeline, config, scenarios, args, log):
         volume = images[f"difference_{name}"].astype(float)
         profile = np.sqrt(np.mean(volume ** 2, axis=(0, 1)))
         k = int(np.argmax(profile))
-        fig, axes = plt.subplots(1, 2, figsize=(11, 4.8), facecolor="#fcfcfb")
-        for ax, (data, title) in zip(axes, (
-                (images["baseline"].astype(float)[:, :, k], "baseline"),
-                (volume[:, :, k], "4D difference"))):
+        maps = ([(images["baseline"].astype(float)[:, :, k], "baseline")]
+                if have_baseline else [])
+        maps.append((volume[:, :, k], "4D difference"))
+        fig, axes = plt.subplots(1, len(maps), figsize=(5.5 * len(maps), 4.8),
+                                 squeeze=False, facecolor="#fcfcfb")
+        axes = axes[0]
+        for ax, (data, title) in zip(axes, maps):
             scale = float(np.abs(data).max()) or 1.0
             ax.imshow(data.T, cmap=seismic, vmin=-scale, vmax=scale,
                       aspect="equal", origin="lower",
@@ -469,7 +512,7 @@ def render(out, images, stacks, grid, pipeline, config, scenarios, args, log):
     # Illumination says which parts of the image the survey actually lit, and
     # after an aperture cut that is not a detail: an edge the operator never
     # reached images as an absence, not as a reservoir that is not there.
-    illum = stacks["baseline"][1][:, iy, :][:, band]
+    illum = next(iter(stacks.values()))[1][:, iy, :][:, band]
     fig, ax = plt.subplots(figsize=(7.5, 4.6), facecolor="#fcfcfb")
     image = ax.imshow(illum.T, cmap=sequential, aspect="auto", origin="upper",
                       extent=[xs[0], xs[-1], z[-1], z[0]],
