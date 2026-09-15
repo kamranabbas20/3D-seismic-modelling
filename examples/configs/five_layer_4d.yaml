@@ -40,7 +40,7 @@ domains:
   # 12 m isotropic. At Fmax 28.8 Hz and Vmin about 2,000 m/s the shortest
   # wavelength is 70 m, sampled at 5.8 cells against the 5.25 an 8th-order
   # operator needs.
-  propagation_bounds: [[450, 1550], [450, 1550], [200, 1500]]
+  propagation_bounds: [[450, 1550], [450, 1550], [0, 1500]]
   propagation_spacing: [12.0, 12.0, 12.0]
   target_bounds: [[700, 1300], [700, 1300], [950, 1200]]
 
@@ -117,10 +117,17 @@ source:
 
 acquisition:
   type: OBN
-  # 650 m above the target: 2.6 wavelengths at the 12 Hz peak, clear of the
-  # near-field zone that ruined an earlier demo at 0.55.
+  # Receivers 650 m above the target: 2.6 wavelengths at the 12 Hz peak,
+  # clear of the near-field zone that ruined an earlier demo at 0.55.
   receiver_depth: 400.0
-  source_depth: 380.0
+  # 150 m, not 380. With both at ~390 m the sources and receivers sat 20 m
+  # apart and their injection near-fields occupied the same slab, which put
+  # a V-shaped bowl through the 600-1,000 m interval of the migrated
+  # section. Separating them by 250 m removes it and recovers 63 % more
+  # measured 4D signal - 17.64 % to 28.72 % NRMS in the target window on the
+  # line survey that established it. The absorbing layer claims the first
+  # 120 m of the domain, so 150 m is about as shallow as a source can sit.
+  source_depth: 150.0
   receiver_spacing: 60.0
   source_spacing: 200.0
   source_line_spacing: 200.0
