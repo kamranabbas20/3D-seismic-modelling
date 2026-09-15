@@ -26,10 +26,21 @@
 
 set -euo pipefail
 
-CONFIG="${CONFIG:-examples/configs/five_layer_600m_dense.yaml}"
+# Inputs, in order of precedence: arguments after the script name, then
+# environment variables, then these defaults.
+#
+#   sbatch examples/slurm_migration.sbatch
+#   sbatch examples/slurm_migration.sbatch my_survey.yaml
+#   sbatch examples/slurm_migration.sbatch my_survey.yaml runs/mine
+#   CONFIG=my_survey.yaml sbatch --export=ALL,CONFIG examples/slurm_migration.sbatch
+#
+# Arguments are the simplest. Prefer them unless your site sets
+# --export=NONE, in which case environment variables need naming explicitly
+# on the sbatch line as above, or they will not reach the job.
+CONFIG="${1:-${CONFIG:-examples/configs/five_layer_600m_dense.yaml}}"
 # Must be a shared filesystem, not node-local scratch: the checkpoints are the
 # whole point, and a requeued job can land on a different node.
-OUT="${OUT:-$SLURM_SUBMIT_DIR/runs/dense}"
+OUT="${2:-${OUT:-$SLURM_SUBMIT_DIR/runs/dense}}"
 
 cd "$SLURM_SUBMIT_DIR"
 mkdir -p logs "$OUT"
@@ -45,6 +56,8 @@ source .venv/bin/activate
 
 echo "job $SLURM_JOB_ID on $(hostname), ${SLURM_CPUS_PER_TASK} cpus, "\
      "restart #${SLURM_RESTART_COUNT:-0}, started $(date -Is)"
+echo "config: $CONFIG"
+echo "output: $OUT"
 
 # --- run --------------------------------------------------------------------
 on_time_limit() {
