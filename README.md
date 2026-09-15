@@ -139,6 +139,43 @@ sim3d run         examples/configs/demo_small.yaml   # everything, ~13 min on 4 
 four-scenario property decomposition and the interaction term, with no wave
 modelling. Everything above it is free.
 
+## Long migrations
+
+`sim3d run` and `sim3d migrate` restart from nothing when they are
+interrupted, which is fine on `demo_small` and useless on a survey that
+takes hours. `examples/run_migration.py` writes every shot to disk as soon
+as it exists, so an interrupted job resumes at the shot it stopped on.
+
+```bash
+pip install -e ".[accel,viz]"        # numba for speed, matplotlib for the PNGs
+
+python examples/run_migration.py examples/configs/five_layer_600m_dense.yaml --check
+python examples/run_migration.py examples/configs/five_layer_600m_dense.yaml \
+    --out runs/dense --threads 32
+```
+
+`--check` runs the QC, estimates the cost and benchmarks the host, then
+stops before propagating anything - run it first on a machine you have not
+used before, because it reports that machine's wall time for the whole
+experiment rather than a guess.
+
+`--threads` is worth setting. Numba and the BLAS pools both size themselves
+to the core count and then fight over it; two such jobs on four cores
+measured a 13x slowdown here.
+
+Into `--out` it writes `images.npz`, a depth section and a map view per
+scenario, an illumination panel, and the `fwd/` and `mig/` checkpoints.
+Figures need matplotlib and nothing else - no browser, no display, no X
+server - and `--no-figures` skips them.
+
+There is no GPU backend. `compute.GPUBackend` raises rather than falling
+back silently, and `--backend` rejects it for the same reason: the solver
+allocates its fields with NumPy and does the CPML, the source injection and
+the receiver gathers there too, so a backend accelerating only the two
+derivative kernels would move the pressure field across PCIe six times per
+timestep and lose to the CPU it replaced. What a big machine buys today is
+cores.
+
 ## The GUI
 
 ```bash
