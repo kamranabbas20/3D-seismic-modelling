@@ -87,7 +87,8 @@ def parse_args(argv=None) -> argparse.Namespace:
     p.add_argument("--backend", default="numba", choices=("numba", "numpy"),
                    help="compute backend; 'gpu' is not implemented (see module docstring)")
     p.add_argument("--threads", type=int, default=None,
-                   help="Numba threads; default is every core the machine reports")
+                   help="Numba threads; defaults to $SLURM_CPUS_PER_TASK when a "
+                        "scheduler set it, otherwise every core the machine reports")
     p.add_argument("--check", action="store_true",
                    help="run QC and the cost estimate, then stop")
     p.add_argument("--fresh", action="store_true",
@@ -145,13 +146,23 @@ def main(argv=None) -> int:
 
     # Thread count has to be set before Numba is imported, which means before
     # sim3d is, because importing it builds the backend registry.
-    if args.threads:
-        os.environ["NUMBA_NUM_THREADS"] = str(args.threads)
-    # The BLAS pools and the Numba pool both size themselves to the core count
-    # and then fight over it. Two Numba jobs on four cores measured a 13x
-    # slowdown on this project; the same happens between the pools.
-    for var in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS"):
-        os.environ.setdefault(var, "1")
+    threads = args.threads or os.environ.get("SLURM_CPUS_PER_TASK")
+    if threads:
+        os.environ["NUMBA_NUM_THREADS"] = str(int(threads))
+    # Assigned, not defaulted. The parallelism here is Numba's `prange` over
+    # the outer grid axis; BLAS is incidental. Both pools size themselves to
+    # the core count and then fight over it - two Numba jobs on four cores
+    # measured a 13x slowdown on this project, and the pools do the same to
+    # each other. `setdefault` was wrong under a scheduler: Slurm exports
+    # OMP_NUM_THREADS from --cpus-per-task, so the value was already set and
+    # the guard did nothing on exactly the machines that needed it.
+    for var in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS",
+                "NUMEXPR_NUM_THREADS", "VECLIB_MAXIMUM_THREADS"):
+        os.environ[var] = "1"
+    # Some clusters mount $HOME read-only on compute nodes, where matplotlib
+    # fails on its font cache rather than on anything to do with the run.
+    os.environ.setdefault("MPLCONFIGDIR", os.path.join(args.out, ".mplcache"))
+    os.makedirs(os.environ["MPLCONFIGDIR"], exist_ok=True)
 
     import numpy as np
     from dataclasses import replace

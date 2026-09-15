@@ -176,6 +176,31 @@ derivative kernels would move the pressure field across PCIe six times per
 timestep and lose to the CPU it replaced. What a big machine buys today is
 cores.
 
+### Under Slurm
+
+`examples/slurm_migration.sbatch` is a working batch script:
+
+```bash
+sbatch examples/slurm_migration.sbatch
+CONFIG=examples/configs/my_survey.yaml OUT=$PWD/runs/mine \
+    sbatch examples/slurm_migration.sbatch        # override either
+```
+
+Three things in it are worth keeping if you write your own. It asks for
+**one task and many cores** - the parallelism is shared-memory `prange`, and
+`--ntasks=32` would start 32 copies of the experiment racing for the same
+checkpoints. It asks for **no GPU**, which would otherwise idle for the
+whole job. And it traps `USR1` from `--signal=B:USR1@600` to requeue itself
+ten minutes before the wall clock runs out: `--requeue` alone covers
+preemption and node failure but not `--time`, so without the trap a job too
+big for one slot is simply cancelled. With the per-shot checkpoints it
+finishes across as many slots as it needs.
+
+`run_migration.py` reads `SLURM_CPUS_PER_TASK` for its thread count, so
+`--threads` should be left off under a scheduler. Point `OUT` at a shared
+filesystem rather than node-local scratch: a requeued job can land on a
+different node, and the checkpoints are the whole point.
+
 ## The GUI
 
 ```bash
