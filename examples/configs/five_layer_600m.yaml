@@ -127,7 +127,17 @@ wells:
       completions: [reservoir]
       control: water_rate
       target: 12000.0
-      bhp_limit_psi: 2400.0     # below the 2,491 psi a 0.7 psi/ft gradient gives
+      # The fracture pressure at 615 m is 1,412 psi on a 0.7 psi/ft gradient,
+      # against an initial 951 psi from this file's own 10,500 Pa/m. The
+      # limit was 2,400 psi - the value from the 1,050 m version of this
+      # model, carried over unchanged - and the injector ran at 2,013 psi,
+      # some 600 psi above fracture. It inflated the whole reservoir by 199
+      # to 911 psi, and because a pressure rise softens the rock while water
+      # replacing oil stiffens it, the two changes cancelled inside the
+      # flood and left the biggest impedance change on the *unswept* rock:
+      # 7.8 % outside the flood against 2.1 % inside it. The 4D was
+      # measuring the overpressure, not the waterflood.
+      bhp_limit_psi: 1380.0
     - name: P1
       role: producer
       x: 1300.0
