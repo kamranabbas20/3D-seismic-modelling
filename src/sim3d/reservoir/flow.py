@@ -69,6 +69,13 @@ def _scatter_add(target: np.ndarray, indices: np.ndarray, values: np.ndarray) ->
         target += np.bincount(indices, weights=values, minlength=target.size)
 
 
+#: Attempts to find a step short enough to respect ``max_saturation_change``
+#: before giving up and taking the shortest one tried.  Running out means the
+#: flux changed by orders of magnitude across the pressure solve, which is
+#: worth a note in the result rather than a silent overshoot.
+_MAX_TIMESTEP_RETRIES = 8
+
+
 @dataclass
 class FlowSettings:
     """Numerical and fluid settings for the flow model."""
@@ -388,6 +395,7 @@ class FlowSimulator:
         step = 0
         day = 0.0
         next_report = 1
+        truncated = 0
 
         while day < duration_days - 1e-9 and step < 2_000_000:
             dt_days = min(settings.max_timestep_days,
@@ -396,13 +404,48 @@ class FlowSimulator:
             dt_days = max(dt_days, settings.min_timestep_days)
             dt = dt_days * DAY
 
-            rates = self._well_rates(day, histories, record=False)
-            dt, dt_days = self._limit_timestep(dt, dt_days, rates)
-            modes = self._pinned_modes(rates)
-            self._solve_pressure(dt, rates)
-            # Re-evaluate on the new pressure - that is the rate actually
-            # delivered - but hold the control decision fixed, so the rate
-            # applied here is exactly the one the solve honoured.
+            # The saturation limit has to be checked against the flux the
+            # advance will actually use, which is the one the pressure solve
+            # produces - not the one standing before it. Checking only
+            # beforehand let 38 % of steps move a cell's saturation past the
+            # limit, the worst by a factor of five, and those were exactly
+            # the long steps the reported well rates lurched on.
+            #
+            # So the step is provisional until it passes the check on its own
+            # result: if it fails, the pressure is rolled back and the step is
+            # retried shorter. Shrinking dt for the saturation alone would be
+            # cheaper and wrong - the pressure solve is implicit in dt, and a
+            # saturation advanced over a different interval than the pressure
+            # it came from does not conserve mass.
+            pressure_before = self.p.copy()
+            last = _MAX_TIMESTEP_RETRIES - 1
+            for attempt in range(_MAX_TIMESTEP_RETRIES):
+                rates = self._well_rates(day, histories, record=False)
+                dt, dt_days = self._limit_timestep(dt, dt_days, rates)
+                modes = self._pinned_modes(rates)
+                self._solve_pressure(dt, rates)
+                # Re-evaluate on the new pressure - that is the rate actually
+                # delivered - but hold the control decision fixed, so the rate
+                # applied here is exactly the one the solve honoured.
+                rates = self._well_rates(day, histories, record=False,
+                                         at_day=day + dt_days, modes=modes)
+                peak = self._peak_saturation_rate(rates)
+                allowed = (settings.max_saturation_change / peak if peak > 0
+                           else float("inf"))
+                if dt <= allowed or dt_days <= settings.min_timestep_days:
+                    break
+                if attempt == last:
+                    # Out of attempts, but the loop must still leave a pressure
+                    # field that was solved for the dt about to be used: rolling
+                    # back and advancing anyway desynchronises the two halves of
+                    # IMPES and shows up directly as material-balance error.
+                    truncated += 1
+                    break
+                self.p = pressure_before.copy()
+                dt_days = max(allowed / DAY, settings.min_timestep_days)
+                dt = dt_days * DAY
+            # Recorded once, on the step that was actually taken: a rejected
+            # trial is not history.
             rates = self._well_rates(day, histories, record=True,
                                      at_day=day + dt_days, modes=modes)
             self._advance_saturation(dt, rates)
@@ -431,6 +474,12 @@ class FlowSimulator:
         error = abs((final_mass - initial_mass) - (injected - produced)) / throughput
 
         notes = []
+        if truncated:
+            notes.append(
+                f"{truncated} of {step} timesteps could not be shortened enough "
+                f"to keep every cell's saturation change within "
+                f"{settings.max_saturation_change:g}; those took the shortest "
+                f"length tried")
         if not settings.gravity:
             notes.append("gravity disabled: the flood will not segregate vertically")
         return FlowResult(days=days, pressure=pressures, water_saturation=saturations,
@@ -629,11 +678,15 @@ class FlowSimulator:
         relperm = self.settings.relperm
         self.sw = np.clip(self.sw, relperm.swc, self.sw_ceiling)
 
-    def _limit_timestep(self, dt: float, dt_days: float, rates):
-        """Shrink the step so no cell's saturation moves more than allowed."""
+    def _peak_saturation_rate(self, rates) -> float:
+        """Fastest saturation change any cell would see, per second."""
         net = self._net_water(self._face_water_flux(), rates)
         change = np.abs(net) / self.pore_volume
-        peak = float(change.max()) if change.size else 0.0
+        return float(change.max()) if change.size else 0.0
+
+    def _limit_timestep(self, dt: float, dt_days: float, rates):
+        """Shrink the step so no cell's saturation moves more than allowed."""
+        peak = self._peak_saturation_rate(rates)
         if peak * dt > self.settings.max_saturation_change:
             dt = self.settings.max_saturation_change / peak
             dt_days = max(dt / DAY, self.settings.min_timestep_days)

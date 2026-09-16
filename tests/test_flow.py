@@ -418,3 +418,96 @@ def test_a_fully_wet_cell_is_not_pushed_back_to_the_residual_oil_endpoint():
     swept = saturation[~aquifer]
     assert swept.max() <= 1.0 - settings.relperm.sor + 1e-9
     assert result.material_balance_error < 1e-8
+
+
+# ------------------------------------------- the step actually taken is legal
+def _injector_producer(rate_stb_per_day=3000.0):
+    from sim3d.core.units import stb_per_day_to_si
+    rate = stb_per_day_to_si(rate_stb_per_day)
+    wells = WellSet([Well("I1", "injector", 100.0, 50.0),
+                     Well("P1", "producer", 900.0, 50.0)])
+    controls = {
+        "I1": WellControl(ControlMode.WATER_RATE, rate),
+        "P1": WellControl(ControlMode.LIQUID_RATE, rate),
+    }
+    return wells, controls
+
+
+def _steps_taken(settings, duration=400.0, report=50.0):
+    """Run, recording the saturation change each accepted step really made."""
+    from sim3d.reservoir import flow as flowmod
+    taken = []
+    original = flowmod.FlowSimulator._advance_saturation
+
+    def spy(self, dt, rates):
+        before = self.sw.copy()
+        original(self, dt, rates)
+        taken.append(float(np.abs(self.sw - before).max()))
+
+    wells, controls = _injector_producer()
+    simulator = build(slab(), wells, controls, settings)
+    flowmod.FlowSimulator._advance_saturation = spy
+    try:
+        result = simulator.run(duration, report_every_days=report)
+    finally:
+        flowmod.FlowSimulator._advance_saturation = original
+    return np.asarray(taken), result
+
+
+def test_no_timestep_moves_a_cell_past_the_saturation_limit():
+    """The limit was checked against the wrong flux.
+
+    `_limit_timestep` measured the saturation rate on the pressure field
+    standing *before* the implicit solve, and `_advance_saturation` then used
+    the field the solve produced. On the 600 m five-layer model that let 38 %
+    of steps overshoot, the worst by a factor of five - and those were exactly
+    the long steps the reported well rates lurched on.
+
+    A step is now provisional until it passes the check on its own result.
+    """
+    settings = FlowSettings(max_timestep_days=30.0, max_saturation_change=0.05)
+    taken, _ = _steps_taken(settings)
+    assert taken.size > 5
+    assert taken.max() <= settings.max_saturation_change + 1e-9, (
+        f"worst step moved a cell by {taken.max():.4f}, "
+        f"{taken.max() / settings.max_saturation_change:.1f}x the limit")
+
+
+def test_a_rejected_trial_step_leaves_pressure_and_saturation_in_step():
+    """Retrying must not desynchronise the two halves of IMPES.
+
+    The first version of the retry rolled the pressure back and then advanced
+    the saturation over the shorter step anyway, so the saturation was
+    transported by a pressure field solved for a different interval. Material
+    balance caught it immediately: 1.7e-05 against 1e-12 everywhere else.
+    """
+    settings = FlowSettings(max_timestep_days=30.0, max_saturation_change=0.01)
+    _, result = _steps_taken(settings)
+    assert abs(result.material_balance_error) < 1e-8
+
+
+def test_cumulative_production_does_not_depend_on_the_timestep():
+    """The convergence claim, as a number rather than an assertion.
+
+    Instantaneous well rates are sampled at whatever step the run happened to
+    end on, so comparing those compares sampling. What has to agree between
+    two refinements is the quantity with physical meaning: how much was
+    produced.
+    """
+    from sim3d.core.units import STB
+
+    def cumulative(max_dt):
+        wells, controls = _injector_producer()
+        settings = FlowSettings(max_timestep_days=max_dt,
+                                max_saturation_change=0.05)
+        result = build(slab(), wells, controls, settings).run(
+            400.0, report_every_days=50.0)
+        history = result.wells["P1"].arrays()
+        dt = np.diff(history["days"], prepend=0.0) * DAY
+        return float(np.sum(history["oil_rate"] * dt)) / STB
+
+    coarse, fine = cumulative(30.0), cumulative(5.0)
+    assert coarse > 0
+    assert abs(coarse - fine) / coarse < 0.02, (
+        f"cumulative oil moved {100 * abs(coarse - fine) / coarse:.1f} % "
+        f"between refinements: {coarse:,.0f} vs {fine:,.0f} STB")
