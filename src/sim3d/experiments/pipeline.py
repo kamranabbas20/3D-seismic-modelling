@@ -27,7 +27,7 @@ from ..acquisition.geometry import Acquisition, OBNGeometry, sampling_report
 from ..core.config import ExperimentConfig
 from ..core.errors import ConfigError
 from ..core.grid import DomainSet
-from ..core.units import psi_to_pa, stb_per_day_to_si
+from ..core.units import pa_to_psi, psi_to_pa, stb_per_day_to_si
 from ..core.planning import (
     CostClass, ResourceBudget, check_budget, estimate_experiment, measure_throughput,
 )
@@ -56,6 +56,7 @@ from ..reservoir.mechanistic import (
 from ..reservoir.flow import FlowSettings, FlowSimulator
 from ..reservoir.relperm import CoreyRelativePermeability
 from ..reservoir.state import initial_state
+from ..rockphysics.fluids import bubble_point
 from ..rockphysics.model import RockPhysicsConfig
 from ..rockphysics.pressure import PressureModel
 from ..validation.qc import (
@@ -528,8 +529,48 @@ class Pipeline:
                            self.config.solver.pml_nodes, result,
                            target=self.domains.target)
             self._check_sampling(models["baseline"], result)
+            self._check_bubble_point(states, result)
             self.result.qc = result
         return self.result.qc
+
+    def _check_bubble_point(self, states, result: QCResult) -> None:
+        """Is the oil single-phase everywhere the flow model assumes it is?
+
+        The flow model has no gas phase: it cannot release gas however far the
+        pressure falls.  That is a defensible floor while the oil stays above
+        its bubble point and a silent fiction below it, and the rock physics
+        carries a GOR that says which.  Nothing compared the two until a
+        configuration turned up whose bubble point sat three times above any
+        pressure the reservoir ever saw - the seismic seeing live oil the flow
+        could never have kept in solution.
+
+        Free gas is the one thing 4D seismic responds to most, so getting this
+        wrong is not a rounding error on the answer; it is the answer.
+        """
+        cfg = self.config.rock_physics
+        pb = float(bubble_point(cfg.api, cfg.gas_gravity, cfg.gor, cfg.temperature))
+        if pb <= 0.0:
+            return
+        pressures = [s.pressure[s.reservoir_mask] for _, s in states.items()
+                     if s.reservoir_mask is not None and s.reservoir_mask.any()]
+        if not pressures:
+            return
+        lowest = float(min(p.min() for p in pressures))
+        if lowest < pb:
+            result.checks.append(Check(
+                Status.WARNING,
+                f"reservoir pressure falls to {pa_to_psi(lowest):,.0f} psi, below "
+                f"the {pa_to_psi(pb):,.0f} psi bubble point implied by GOR "
+                f"{cfg.gor:g} m3/m3 at {cfg.api:g} API; the flow model has no gas "
+                f"phase, so gas that would come out of solution there is neither "
+                f"flowed nor seen by the rock physics"))
+        else:
+            result.checks.append(Check(
+                Status.PASS,
+                f"oil stays above its {pa_to_psi(pb):,.0f} psi bubble point "
+                f"everywhere (lowest reservoir pressure "
+                f"{pa_to_psi(lowest):,.0f} psi), which is what the gas-free flow "
+                f"model assumes"))
 
     def _check_sampling(self, model: AcousticModel, result: QCResult) -> None:
         """Aperture, standoff and operator aliasing for the survey as configured.

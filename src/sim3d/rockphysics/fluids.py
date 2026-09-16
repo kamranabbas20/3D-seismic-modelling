@@ -165,6 +165,34 @@ def gas_properties(pressure, temperature, gravity=0.65) -> FluidState:
 
 
 # --- oil ------------------------------------------------------------------
+def bubble_point(api, gas_gravity, gor, temperature):
+    """Bubble-point pressure by Standing's correlation, in Pa.
+
+    Standing, M.B. (1947), *A pressure-volume-temperature correlation for
+    mixtures of California oils and gases*.  An empirical fit, good to
+    perhaps 15 % on the oils it was fitted to and worse off them, so it is
+    a screening number rather than a PVT answer.
+
+    It earns its place because the flow model has no gas phase at all: it
+    cannot let gas out of solution however far the pressure falls.  That is
+    a defensible floor only while the oil stays above its bubble point, and
+    nothing was checking.  On the 600 m five-layer model the rock physics
+    carried 100 m^3/m^3 - 562 scf/STB, Pb about 2,790 psi - against a
+    reservoir that never exceeded 1,303 psi, so the seismic saw live oil
+    that the flow could never have kept in solution.
+
+    ``gor`` is in m^3/m^3, as elsewhere in this module.
+    """
+    rs_scf = np.asarray(gor, dtype=float) * 5.615          # m^3/m^3 -> scf/STB
+    t_f = np.asarray(temperature, dtype=float) * 9.0 / 5.0 + 32.0
+    api = np.asarray(api, dtype=float)
+    g = np.asarray(gas_gravity, dtype=float)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        pb_psi = 18.2 * ((rs_scf / g) ** 0.83
+                         * 10.0 ** (0.00091 * t_f - 0.0125 * api) - 1.4)
+    return np.maximum(pb_psi, 0.0) * 6894.757293168
+
+
 def oil_properties(pressure, temperature, api=30.0, gas_gravity=0.65,
                    gor=0.0) -> FluidState:
     """Oil density and bulk modulus (Batzle & Wang eqs 18-21).

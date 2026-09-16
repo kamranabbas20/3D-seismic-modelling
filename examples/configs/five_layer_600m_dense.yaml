@@ -84,6 +84,17 @@ geology:
     seed: 1
 
 rock_physics:
+  # 15, not the 100 the library defaults to. GOR is in m3/m3, so 100 is
+  # 562 scf/STB, whose bubble point by Standing is about 2,790 psi - and this
+  # reservoir never sees more than 1,303 psi, or less than 794. The oil would
+  # have been two-phase everywhere, always, while the flow model (which has no
+  # gas phase at all) carried it as single-phase liquid. 15 m3/m3 is 84
+  # scf/STB and Pb about 558 psi, below both the minimum reservoir pressure
+  # and the 600 psi producer BHP, so the two halves of the model agree.
+  #
+  # It is not cosmetic: the dissolved gas was softening the oil enough to
+  # inflate the 4D response by a fifth, from 2.06 % to 2.61 % |dAI|/AI.
+  gor: 15.0
   dry_frame_model: soft_sand
   critical_porosity: 0.40
   coordination: 9.0

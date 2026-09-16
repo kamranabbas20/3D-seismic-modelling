@@ -405,3 +405,20 @@ def test_the_configuration_reports_every_model_it_used():
     for token in ("mineral mixing", "dry frame", "fluid mixing", "Batzle-Wang",
                   "Gassmann", "pressure model"):
         assert token in text
+
+
+def test_standing_bubble_point_moves_the_right_way():
+    """A screening correlation, held to the behaviour rather than to digits.
+
+    More dissolved gas, a lighter oil and a hotter reservoir all raise the
+    bubble point; dead oil has none.
+    """
+    from sim3d.rockphysics.fluids import bubble_point
+
+    pb = lambda gor, api=30.0, t=60.0: float(bubble_point(api, 0.65, gor, t))
+    assert pb(0.0) == 0.0
+    assert pb(15.0) < pb(40.0) < pb(100.0)
+    assert pb(100.0, api=45.0) < pb(100.0, api=20.0)   # lighter oil, lower Pb
+    assert pb(100.0, t=40.0) < pb(100.0, t=90.0)       # hotter, higher Pb
+    # The number that started this: 100 m3/m3 of 30 API at 60 C.
+    assert 2500 * 6894.757 < pb(100.0) < 3100 * 6894.757

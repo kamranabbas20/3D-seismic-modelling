@@ -603,3 +603,33 @@ def test_the_full_qc_reports_on_operator_aliasing(pipeline):
     messages = [c.message for c in pipeline.qc().checks]
     assert any("operator" in m for m in messages), \
         f"no operator-sampling check among {len(messages)} checks"
+
+
+def test_qc_warns_when_the_oil_would_be_below_its_bubble_point():
+    """The flow model has no gas phase, so it cannot release gas however far
+    the pressure falls. That is a defensible floor while the oil stays above
+    its bubble point and a silent fiction below it, and nothing compared the
+    two until a configuration turned up carrying 100 m3/m3 - 562 scf/STB, a
+    bubble point near 2,790 psi - against a reservoir that never exceeded
+    1,303. Free gas is what 4D seismic responds to most, so that is not a
+    rounding error on the answer, it is the answer.
+    """
+    config = tiny_config()
+    config.rock_physics.gor = 400.0
+    messages = [c.message for c in Pipeline(config).qc().checks]
+    warned = [m for m in messages if "bubble point" in m]
+    assert warned, f"no bubble-point check among {len(messages)} checks"
+    assert "below the" in warned[0]
+
+    config.rock_physics.gor = 0.5
+    passed = [c for c in Pipeline(config).qc().checks if "bubble point" in c.message]
+    assert passed and passed[0].status is Status.PASS, passed
+
+
+def test_dead_oil_raises_no_bubble_point_question():
+    """gor = 0 is dead oil: there is no dissolved gas to come out, so the
+    check has nothing to say rather than something reassuring to say."""
+    config = tiny_config()
+    config.rock_physics.gor = 0.0
+    assert not [c for c in Pipeline(config).qc().checks
+                if "bubble point" in c.message]
