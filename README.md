@@ -347,6 +347,22 @@ is not one.
 `five_layer_600m` under depletion drive instead of a balanced waterflood,
 with a producer below the bubble point.
 
+![Gas coming out of solution under depletion drive](docs/figures/solution-gas-depletion.png)
+
+A gas halo growing outwards from the producer, under the pressure drawdown
+cone that caused it. The colour scale is clipped at the 99th percentile
+because the well block itself reaches Sg 0.66 — one cell column, and the
+run says so rather than letting it set the scale.
+
+![Pressure crosses the bubble point, then gas comes out](docs/figures/solution-gas-history.png)
+
+The mean pressure falls 390 psi in the first 40 days on the compressibility
+of a dead oil, then crosses the bubble point around day 100 and flattens: by
+day 1,095 it has given up only another 40 psi. That knee is the gas, and it
+is the reason the compressibility has to be a field. By the end, 82 % of the
+reservoir carries gas above the critical saturation — which is also the run
+telling you it has left the regime where its own assumption holds.
+
 ## What the platform will not do
 
 The rule is **no silent degradation**. The software never quietly coarsens
