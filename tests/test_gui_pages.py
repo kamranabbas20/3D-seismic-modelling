@@ -347,3 +347,78 @@ def test_the_configuration_can_be_saved_from_every_page():
         labels = [(b.label or "").lower() for b in app.download_button]
         assert any("save configuration" in l for l in labels), \
             f"{page!r} has no save button, only {labels}"
+
+
+# --------------------------------------------- the survey footprint editor
+def _checkbox(app, fragment: str):
+    for widget in app.checkbox:
+        if fragment.lower() in (widget.label or "").lower():
+            return widget
+    raise AssertionError(
+        f"no checkbox like {fragment!r}; saw {[c.label for c in app.checkbox]}")
+
+
+def test_the_survey_footprint_is_editable_from_the_migration_page():
+    """Coverage was configuration-file only, and it is the knob that decides
+    whether the anomaly is illuminated at all.
+
+    Aperture scales with depth rather than with target size, so the derived
+    footprint - target plus a margin - is right until the target is narrowed
+    for a 2.5D line, at which point the inline extent shrinks with it and the
+    survey collapses to a couple of shots. Being able to pin it matters.
+    """
+    app = _goto(_app(), "Migration Setup")
+    assert not app.exception, app.exception[0].value
+    cfg = app.session_state.config
+    assert cfg.acquisition.receiver_extent is None    # derived, to begin with
+
+    _checkbox(app, "Set the survey footprint explicitly").set_value(True)
+    app.run()
+    assert not app.exception, app.exception[0].value
+
+    _number(app, "acq_source_extent").set_value(1800.0)
+    app.run()
+    assert not app.exception, app.exception[0].value
+    assert app.session_state.config.acquisition.source_extent == 1800.0
+
+
+def test_the_shot_spacing_is_editable_where_the_operator_limit_is_reported():
+    """The number that decides whether the migration aliases, on the page
+    that reports the limit it has to beat."""
+    app = _goto(_app(), "Migration Setup")
+    before = app.session_state.config.acquisition.source_spacing
+    _number(app, "acq_source_spacing").set_value(float(before) / 2.0)
+    app.run()
+    assert not app.exception, app.exception[0].value
+    assert app.session_state.config.acquisition.source_spacing == before / 2.0
+
+
+def test_the_record_length_appears_once_on_the_migration_page():
+    """It belongs to the recording, and the acquisition expander also owns
+    one — two widgets writing the same field on one page is a bug."""
+    app = _goto(_app(), "Migration Setup")
+    labels = [(n.label or "").lower() for n in app.number_input]
+    assert sum("record length" in l for l in labels) == 1, labels
+
+
+def test_pinning_the_footprint_does_not_start_from_an_illegal_survey():
+    """Ticking the box seeded the extents from the propagation span, which by
+    definition contains the absorbing layer: 124 receivers landed inside it
+    and the page greeted the user with its own validation error. The seed is
+    the footprint already in force — the target plus its margin — which is
+    legal by construction."""
+    app = _goto(_app(), "Migration Setup")
+    _checkbox(app, "Set the survey footprint explicitly").set_value(True)
+    app.run()
+    assert not app.exception, app.exception[0].value
+
+    cfg = app.session_state.config
+    target = cfg.domains.target_bounds
+    expected = (target[0][1] - target[0][0]) + 2 * cfg.acquisition.target_margin
+    assert _number(app, "acq_source_extent").value == pytest.approx(expected)
+
+    # And the survey it describes actually fits.
+    from sim3d.experiments.pipeline import Pipeline
+    app.session_state.config.acquisition.source_extent = expected
+    app.session_state.config.acquisition.receiver_extent = expected
+    assert not Pipeline(app.session_state.config).geometry_qc().failed

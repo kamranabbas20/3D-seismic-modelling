@@ -907,8 +907,13 @@ def page_rockphysics() -> None:
                    "simply adding. Rock physics alone, at this stage.")
 
 
-def _acquisition_controls(cfg) -> None:
+def _acquisition_controls(cfg, include_record: bool = True) -> None:
     """Edit the geometry the diagnostics below are about to judge.
+
+    ``include_record`` exists because the record length belongs to the
+    recording rather than to the geometry, and the migration page owns it
+    there. Two widgets writing the same field on one page is a bug, not a
+    convenience.
 
     The survey diagnostics tell you the standoff is too small or the trace
     spacing aliases the operator, and until now the page gave no way to act
@@ -970,19 +975,79 @@ def _acquisition_controls(cfg) -> None:
             max(float(acq.receiver_depth), new_shallowest), 10.0,
             key="acq_receiver_depth")
 
-        record = st.number_input(
-            "Record length (s)", 0.1, 20.0, float(cfg.solver.record_length), 0.1,
-            key="acq_record_length",
-            help="Listening time. Moving the acquisition up lengthens every "
-                 "travel path, so a standoff that fixes the near-field needs "
-                 "a longer record to still capture the target.")
+        # The footprint: how far the survey reaches, as opposed to how
+        # finely it samples. Left unset it is derived from the target plus a
+        # margin, which is the right default and the wrong answer the moment
+        # the target is narrowed for a 2.5D line - the inline footprint
+        # shrinks with it and the survey collapses to a couple of shots.
+        explicit = st.checkbox(
+            "Set the survey footprint explicitly",
+            value=any(e is not None for e in (acq.receiver_extent,
+                                              acq.source_extent,
+                                              acq.receiver_extent_y,
+                                              acq.source_extent_y)),
+            key="acq_explicit_extent",
+            help="Unset, each footprint is the target plus "
+                 f"{acq.target_margin:,.0f} m on every side. Aperture scales "
+                 "with depth, not with target size: illuminating a point h "
+                 "below the sources at incidence θ wants sources h·tan θ "
+                 "either side of it.")
+        extents = (acq.receiver_extent, acq.source_extent,
+                   acq.receiver_extent_y, acq.source_extent_y)
+        if explicit:
+            # Seed from the footprint that is already in force - the target
+            # plus a margin - rather than from the domain span. Seeding from
+            # the span put 124 receivers inside the absorbing layer the
+            # instant the box was ticked, which is a validation error offered
+            # as a starting point.
+            target = cfg.domains.target_bounds or bounds
+            derived_x = (float(target[0][1]) - float(target[0][0])
+                         + 2.0 * acq.target_margin)
+            derived_y = (float(target[1][1]) - float(target[1][0])
+                         + 2.0 * acq.target_margin)
+            g, h = st.columns(2)
+            receiver_extent = g.number_input(
+                "Receiver footprint, inline (m)", 0.0, 100000.0,
+                float(acq.receiver_extent if acq.receiver_extent is not None
+                      else derived_x), 20.0, key="acq_receiver_extent")
+            source_extent = h.number_input(
+                "Source footprint, inline (m)", 0.0, 100000.0,
+                float(acq.source_extent if acq.source_extent is not None
+                      else derived_x), 20.0, key="acq_source_extent")
+            i, j = st.columns(2)
+            receiver_extent_y = i.number_input(
+                "Receiver footprint, crossline (m)", 0.0, 100000.0,
+                float(acq.receiver_extent_y if acq.receiver_extent_y is not None
+                      else derived_y), 20.0, key="acq_receiver_extent_y",
+                help="Narrow this and the source crossline footprint below "
+                     "the source line spacing to shoot one line instead of a "
+                     "carpet: the wave equation stays 3D, the cost does not.")
+            source_extent_y = j.number_input(
+                "Source footprint, crossline (m)", 0.0, 100000.0,
+                float(acq.source_extent_y if acq.source_extent_y is not None
+                      else derived_y), 1.0, key="acq_source_extent_y")
+            extents = (receiver_extent, source_extent,
+                       receiver_extent_y, source_extent_y)
+        else:
+            extents = (None, None, None, None)
+
+        record = float(cfg.solver.record_length)
+        if include_record:
+            record = st.number_input(
+                "Record length (s)", 0.1, 20.0, float(cfg.solver.record_length),
+                0.1, key="acq_record_length",
+                help="Listening time. Moving the acquisition up lengthens every "
+                     "travel path, so a standoff that fixes the near-field needs "
+                     "a longer record to still capture the target.")
 
         chosen = (source_spacing, line_spacing, receiver_spacing, domain_top,
-                  source_depth, receiver_depth, record)
+                  source_depth, receiver_depth, record, extents)
         current = (float(acq.source_spacing), float(acq.source_line_spacing),
                    float(acq.receiver_spacing), float(bounds[2][0]),
                    float(acq.source_depth), float(acq.receiver_depth),
-                   float(cfg.solver.record_length))
+                   float(cfg.solver.record_length),
+                   (acq.receiver_extent, acq.source_extent,
+                    acq.receiver_extent_y, acq.source_extent_y))
         if chosen == current:
             return
         if min(source_depth, receiver_depth) < new_shallowest:
@@ -996,6 +1061,8 @@ def _acquisition_controls(cfg) -> None:
         acq.receiver_spacing = receiver_spacing
         acq.source_depth = source_depth
         acq.receiver_depth = receiver_depth
+        (acq.receiver_extent, acq.source_extent,
+         acq.receiver_extent_y, acq.source_extent_y) = extents
         cfg.solver.record_length = record
         bounds[2][0] = domain_top
         domains.propagation_bounds = bounds
@@ -1252,9 +1319,13 @@ def page_migration() -> None:
         invalidate()
 
     st.subheader("Acquisition")
-    st.caption("The geometry is edited on **Acquisition & QC**, where the fold "
-               "and offset diagnostics are. The verdict that matters for the "
-               "migration is repeated below.")
+    st.caption("The geometry is a migration parameter, not a survey-design "
+               "afterthought: the trace spacing decides whether the operator "
+               "aliases, and the footprint decides whether the anomaly is "
+               "illuminated at all. Both are editable here. **Acquisition & "
+               "QC** has the same controls alongside the fold, offset and "
+               "azimuth diagnostics.")
+    _acquisition_controls(cfg, include_record=False)
     _acquisition_summary(cfg, pipe)
 
     st.subheader("Validation")
@@ -1369,10 +1440,31 @@ def _acquisition_summary(cfg, pipe) -> None:
         st.error(str(exc))
         return
     a, b, c, d = st.columns(4)
-    a.metric("Sources", f"{acquisition.n_sources:,}")
-    b.metric("Receivers", f"{acquisition.n_receivers:,}")
+    a.metric("Sources", f"{acquisition.n_sources:,}",
+             help="Cost is linear in this. The planner counts three "
+                  "propagations per shot per earth model.")
+    b.metric("Receivers", f"{acquisition.n_receivers:,}",
+             help="Nearly free: the receiver wavefield is back-propagated as "
+                  "one field however many receivers are in it.")
     c.metric("Traces", f"{acquisition.n_sources * acquisition.n_receivers:,}")
     d.metric("Shot spacing", f"{cfg.acquisition.source_spacing:,.0f} m")
+
+    # Footprint against target, which is the coverage question: a survey that
+    # stops at the target edge illuminates it from one side only.
+    points = np.vstack([np.asarray(acquisition.sources, dtype=float),
+                        np.asarray(acquisition.receivers, dtype=float)])
+    (tx0, tx1), (ty0, ty1), _ = pipe.domains.target.bounds
+    e, f, g = st.columns(3)
+    e.metric("Inline footprint",
+             f"{points[:, 0].min():,.0f} – {points[:, 0].max():,.0f} m",
+             help=f"Target spans {tx0:,.0f} – {tx1:,.0f} m.")
+    f.metric("Crossline footprint",
+             f"{points[:, 1].min():,.0f} – {points[:, 1].max():,.0f} m",
+             help=f"Target spans {ty0:,.0f} – {ty1:,.0f} m.")
+    margin = min(tx0 - points[:, 0].min(), points[:, 0].max() - tx1)
+    g.metric("Inline margin past target", f"{margin:,.0f} m",
+             help="Below about 100 m the edge of the target is lit from one "
+                  "side only and the image there should not be read.")
 
     earth = pipe.result.earth
     if earth is None:
