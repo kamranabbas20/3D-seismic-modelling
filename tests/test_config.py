@@ -71,3 +71,19 @@ def test_the_shipped_examples_load_and_describe(path):
     assert config.short_hash in text
     domains = config.domains.build()  # raises if the hierarchy is inconsistent
     assert domains.propagation.n_cells > 0
+
+
+def test_solution_gas_round_trips_and_changes_the_hash(tmp_path):
+    """Turning gas on has to invalidate a cached run: it is a different earth."""
+    config = ExperimentConfig()
+    assert config.simulation.solution_gas is False   # off unless asked for
+    original = config.content_hash()
+
+    config.simulation.solution_gas = True
+    config.simulation.critical_gas_saturation = 0.035
+    assert config.content_hash() != original
+
+    reloaded = ExperimentConfig.load(config.save(tmp_path / "gas.yaml"))
+    assert reloaded.simulation.solution_gas is True
+    assert reloaded.simulation.critical_gas_saturation == 0.035
+    assert reloaded.content_hash() == config.content_hash()

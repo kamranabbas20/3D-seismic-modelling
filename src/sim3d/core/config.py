@@ -205,6 +205,16 @@ class SimulationConfig:
     kv_over_kh: float = 0.1
     gravity: bool = True
     max_saturation_change: float = 0.05
+    #: Let gas come out of solution below the bubble point.  The PVT comes
+    #: from the ``rock_physics`` section (api, gas_gravity, gor, temperature)
+    #: so the flow and the seismic cannot disagree about the same oil.
+    solution_gas: bool = False
+    #: Gas saturation at which free gas would start to move.  The solution-gas
+    #: model holds it in place, so this is where the model stops being
+    #: trustworthy rather than a flow parameter.
+    critical_gas_saturation: float = 0.02
+    #: Undersaturated oil compressibility, 1/psi.
+    oil_compressibility_per_psi: float = 1.0e-5
     #: Drawdown used when suggesting a rate for a new well, psi.
     suggested_drawdown_psi: float = 500.0
     sweep_years: float = 10.0

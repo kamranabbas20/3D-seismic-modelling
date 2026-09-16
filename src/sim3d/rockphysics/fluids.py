@@ -30,10 +30,13 @@ from dataclasses import dataclass
 import numpy as np
 
 from ..core.errors import ConfigError, ValidationError
+from ..core.units import PSI
 
 MPA = 1.0e6
 GCC = 1.0e3
 R_GAS = 8.31441  # J / (mol K), as used by Batzle & Wang
+P_STANDARD = 101325.0   # Pa, 14.696 psia
+T_STANDARD = 288.706     # K, 60 degF
 
 #: Fitted range of the Batzle-Wang correlations (P in Pa, T in degC, S in ppm).
 VALIDITY = {
@@ -132,6 +135,56 @@ def brine_properties(pressure, temperature, salinity=35000.0) -> FluidState:
 
 
 # --- gas ------------------------------------------------------------------
+def _gas_z(p_mpa, t_c, gravity):
+    """Batzle & Wang's compressibility factor and the terms built from it.
+
+    Returns ``(z, p_pr, t_pr, E)``.  Split out of :func:`gas_properties`
+    because the flow model needs the gas formation volume factor, which is
+    ``Z`` alone, while the rock physics needs the adiabatic modulus, which
+    also needs the pseudo-reduced pressure and the exponential term.  One
+    correlation, two callers.
+    """
+    t_abs = t_c + 273.15
+    p_pr = p_mpa / (4.892 - 0.4048 * gravity)    # pseudo-reduced pressure
+    t_pr = t_abs / (94.72 + 170.75 * gravity)    # pseudo-reduced temperature
+
+    e_exp = -(0.45 + 8.0 * (0.56 - 1.0 / t_pr) ** 2) * p_pr**1.2 / t_pr
+    e = 0.109 * (3.85 - t_pr) ** 2 * np.exp(e_exp)
+    z = (0.03 + 0.00527 * (3.5 - t_pr) ** 3) * p_pr + 0.642 * t_pr \
+        - 0.007 * t_pr**4 - 0.52 + e
+    return z, p_pr, t_pr, e
+
+
+def gas_z_factor(pressure, temperature, gravity=0.65):
+    """Gas compressibility factor ``Z``, dimensionless.
+
+    ``pressure`` in Pa, ``temperature`` in degrees Celsius.
+    """
+    g = np.asarray(gravity, dtype=float)
+    if np.any(g <= 0):
+        raise ValidationError(f"gas gravity must be positive, got {gravity}")
+    return _gas_z(np.asarray(pressure, dtype=float) / MPA,
+                  np.asarray(temperature, dtype=float), g)[0]
+
+
+def gas_fvf(pressure, temperature, gravity=0.65):
+    r"""Gas formation volume factor :math:`B_g`, reservoir m^3 per standard m^3.
+
+    .. math:: B_g = \frac{p_{sc}}{p}\,\frac{T}{T_{sc}}\,Z
+
+    Standard conditions are 14.696 psia and 60 degF, which is what "standard
+    cubic metre" means everywhere else in this codebase.  The factor is
+    small - a few hundredths - which is the whole reason a little dissolved
+    gas coming out of solution makes a large gas saturation.
+    """
+    p = np.asarray(pressure, dtype=float)
+    t = np.asarray(temperature, dtype=float)
+    if np.any(p <= 0):
+        raise ValidationError("gas formation volume factor needs a positive pressure")
+    z = gas_z_factor(p, t, gravity)
+    return (P_STANDARD / p) * ((t + 273.15) / T_STANDARD) * z
+
+
 def gas_properties(pressure, temperature, gravity=0.65) -> FluidState:
     """Hydrocarbon-gas density and adiabatic bulk modulus (Batzle & Wang eqs 9-11).
 
@@ -144,14 +197,8 @@ def gas_properties(pressure, temperature, gravity=0.65) -> FluidState:
     if np.any(g <= 0):
         raise ValidationError(f"gas gravity must be positive, got {gravity}")
 
+    z, p_pr, t_pr, e = _gas_z(p, t, g)
     t_abs = t + 273.15
-    p_pr = p / (4.892 - 0.4048 * g)              # pseudo-reduced pressure
-    t_pr = t_abs / (94.72 + 170.75 * g)          # pseudo-reduced temperature
-
-    e_exp = -(0.45 + 8.0 * (0.56 - 1.0 / t_pr) ** 2) * p_pr**1.2 / t_pr
-    e = 0.109 * (3.85 - t_pr) ** 2 * np.exp(e_exp)
-    z = (0.03 + 0.00527 * (3.5 - t_pr) ** 3) * p_pr + 0.642 * t_pr \
-        - 0.007 * t_pr**4 - 0.52 + e
 
     rho = 28.8 * g * p * MPA / (z * R_GAS * t_abs * 1000.0)  # kg/m^3
 
@@ -191,6 +238,67 @@ def bubble_point(api, gas_gravity, gor, temperature):
         pb_psi = 18.2 * ((rs_scf / g) ** 0.83
                          * 10.0 ** (0.00091 * t_f - 0.0125 * api) - 1.4)
     return np.maximum(pb_psi, 0.0) * 6894.757293168
+
+
+def _standing_exponent(api, temperature):
+    """Standing's temperature/gravity term, shared by Pb and its inverse."""
+    t_f = np.asarray(temperature, dtype=float) * 9.0 / 5.0 + 32.0
+    return 10.0 ** (0.00091 * t_f - 0.0125 * np.asarray(api, dtype=float))
+
+
+def solution_gor(pressure, api=30.0, gas_gravity=0.65, temperature=80.0):
+    """Saturated solution gas-oil ratio at ``pressure``, in m^3/m^3.
+
+    This is :func:`bubble_point` solved for the GOR rather than the
+    pressure: the amount of gas the oil can hold at ``pressure``, which is
+    what sets how much comes *out* when the pressure falls below the bubble
+    point.  Inverting the same correlation rather than fitting a second one
+    means ``bubble_point(api, g, solution_gor(p, ...), t) == p`` by
+    construction, so the flow model and the bubble-point QC check can never
+    disagree about where the bubble point is.
+
+    Standing's fit does not pass through the origin - it returns about
+    2 scf/STB at atmospheric pressure - so the value is clipped at zero and
+    the residual is left as it is.  Against the 80-plus scf/STB a live oil
+    carries it changes nothing, and forcing the curve through zero would
+    break the round trip that is the point of this function.
+    """
+    p_psi = np.asarray(pressure, dtype=float) / PSI
+    ratio = (np.maximum(p_psi, 0.0) / 18.2 + 1.4) / _standing_exponent(api, temperature)
+    rs_scf = np.asarray(gas_gravity, dtype=float) * ratio ** (1.0 / 0.83)
+    return np.maximum(rs_scf, 0.0) / 5.615        # scf/STB -> m^3/m^3
+
+
+def oil_fvf(pressure, rs, api=30.0, gas_gravity=0.65, temperature=80.0,
+            oil_compressibility=1.5e-9):
+    r"""Oil formation volume factor :math:`B_o`, reservoir m^3 per stock-tank m^3.
+
+    Standing's correlation for the saturated branch,
+
+    .. math::
+        B_o = 0.9759 + 0.00012\,\big(R_s\sqrt{\gamma_g/\gamma_o}
+                                    + 1.25\,T_F\big)^{1.2}
+
+    with ``rs`` in m^3/m^3, plus the undersaturated branch
+    :math:`B_o = B_{ob}\exp[-c_o (p - p_b)]` above the bubble point, where
+    the oil has no more gas to take on and simply compresses.
+
+    ``oil_compressibility`` is in 1/Pa; 1.5e-9 is about 1e-5 /psi, typical
+    for a light undersaturated oil.
+    """
+    rs = np.asarray(rs, dtype=float)
+    api = np.asarray(api, dtype=float)
+    t_f = np.asarray(temperature, dtype=float) * 9.0 / 5.0 + 32.0
+    if np.any(rs < 0):
+        raise ValidationError(f"solution GOR must be non-negative, got {rs}")
+    gamma_o = 141.5 / (api + 131.5)
+    rs_scf = rs * 5.615
+    bob = 0.9759 + 0.00012 * (
+        rs_scf * np.sqrt(np.asarray(gas_gravity, dtype=float) / gamma_o)
+        + 1.25 * t_f) ** 1.2
+    pb = bubble_point(api, gas_gravity, rs, temperature)
+    excess = np.maximum(np.asarray(pressure, dtype=float) - pb, 0.0)
+    return bob * np.exp(-oil_compressibility * excess)
 
 
 def oil_properties(pressure, temperature, api=30.0, gas_gravity=0.65,

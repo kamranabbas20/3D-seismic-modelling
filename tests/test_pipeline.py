@@ -626,6 +626,30 @@ def test_qc_warns_when_the_oil_would_be_below_its_bubble_point():
     assert passed and passed[0].status is Status.PASS, passed
 
 
+def test_the_bubble_point_warning_names_its_own_remedy():
+    """A warning that does not say what to do about it is half a warning."""
+    config = tiny_config()
+    config.rock_physics.gor = 400.0
+    warned = [c.message for c in Pipeline(config).qc().checks
+              if "bubble point" in c.message]
+    assert warned and "solution_gas" in warned[0]
+
+
+def test_with_solution_gas_the_check_asks_a_different_question():
+    """Below the bubble point is no longer a fiction, so it is no longer the
+    question.  What matters instead is whether the gas stayed immobile, which
+    is the assumption this model actually makes."""
+    config = tiny_config()
+    config.rock_physics.gor = 400.0
+    config.simulation.solution_gas = True
+    checks = Pipeline(config).qc().checks
+    messages = [c.message for c in checks]
+    assert not [m for m in messages if "has no gas phase" in m]
+    gas = [m for m in messages if "critical gas saturation" in m]
+    assert gas, f"no gas-saturation check among {len(messages)} checks"
+    assert [m for m in messages if "hydrocarbon volume closes" in m]
+
+
 def test_dead_oil_raises_no_bubble_point_question():
     """gor = 0 is dead oil: there is no dissolved gas to come out, so the
     check has nothing to say rather than something reassuring to say."""

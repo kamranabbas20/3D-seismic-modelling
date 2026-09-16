@@ -295,6 +295,58 @@ real target: a 3 km model with a faulted anticline, two injectors and three
 producers. `sim3d plan` reports it as VERY HIGH and quotes a runtime only
 against a measured throughput.
 
+## Reservoir flow
+
+Two-phase IMPES on the reservoir cells: pressure implicit, saturation
+explicit under a CFL limit, Corey relative permeabilities, harmonic
+transmissibilities with fault multipliers, Peaceman wells on rate or
+bottom-hole pressure. Material balance closes to 1e-10 of throughput and
+cumulative oil is independent of the timestep to 0.02 %.
+
+### Gas out of solution
+
+`simulation.solution_gas: true` lets gas come out of solution where the
+pressure falls below the bubble point — so **where and when it breaks out is
+an output, not an assumption**. It was the one thing the two-phase model
+could not answer: it would take a producer's pressure to any depth you liked
+and report a gas saturation of exactly zero, because it had no gas phase to
+put anything in, not because no gas came out.
+
+Two conserved scalars per cell in standard volumes — stock-tank oil and total
+gas — transported on the oil flux at the upstream solution GOR, then flashed:
+
+```
+Rs = min( G/N , Rs_sat(p) )          Sg = ( G - N Rs ) Bg(p) / Vp
+```
+
+The PVT comes from the same section the rock physics reads (`api`,
+`gas_gravity`, `gor`, `temperature`), so the flow and the seismic cannot
+describe different oils. `Rs_sat(p)` is Standing's bubble point solved for
+the GOR rather than a second correlation, so the flow model and the
+bubble-point QC check agree by construction.
+
+The compressibility in the pressure equation becomes a field: below the
+bubble point, gas coming out of solution and then expanding puts it around
+1e-7 /Pa against the 4e-10 /Pa a dead oil carries. That is what makes a
+solution-gas drive decline slowly instead of collapsing to the bottom-hole
+pressure, and leaving it out does not perturb the gas saturation, it
+determines it.
+
+**The limit, stated rather than discovered.** Liberated gas does not flow
+between cells — only a well can take it, and only above the critical gas
+saturation. No gas cap forms, gas cannot segregate or cone, and the produced
+GOR is capped near `Rs` at the well. That is fair while `Sg` stays under
+`critical_gas_saturation` and increasingly wrong above it, so the run reports
+the peak `Sg` it reached, says which regime it ended in, and reports how far
+the hydrocarbon volume balance closed (mean over the field and worst cell,
+because a well block is routinely two orders of magnitude worse than the
+reservoir body). Past that, a black-oil simulator is the instrument, and this
+is not one.
+
+`examples/configs/five_layer_600m_depletion.yaml` is the same earth as
+`five_layer_600m` under depletion drive instead of a balanced waterflood,
+with a producer below the bubble point.
+
 ## What the platform will not do
 
 The rule is **no silent degradation**. The software never quietly coarsens
@@ -497,6 +549,10 @@ Interfaces are designed for these; the physics is not there yet, and the
   engine that studying it requires, and stores the ground truth
   (ΔP, ΔSw, ΔSg, ΔVp, Δρ, ΔAI and every seismic difference) that a future
   inversion would be trained or tested against.
+- **Black oil.** Gas comes out of solution (see *Reservoir flow*) but does
+  not flow between cells, so there is no gas cap, no coning and no
+  three-phase relative permeability. The flow model reports how far its
+  volume balance closed rather than implying it closed.
 - Marine streamer, OBC and land geometries; SEG-Y and RESQML I/O; the GPU
   backend.
 - Geology is built from parametric templates, not drawn: dip, throw and fold

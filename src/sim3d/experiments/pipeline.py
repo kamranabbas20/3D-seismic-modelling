@@ -27,7 +27,7 @@ from ..acquisition.geometry import Acquisition, OBNGeometry, sampling_report
 from ..core.config import ExperimentConfig
 from ..core.errors import ConfigError
 from ..core.grid import DomainSet
-from ..core.units import pa_to_psi, psi_to_pa, stb_per_day_to_si
+from ..core.units import PSI, pa_to_psi, psi_to_pa, stb_per_day_to_si
 from ..core.planning import (
     CostClass, ResourceBudget, check_budget, estimate_experiment, measure_throughput,
 )
@@ -54,6 +54,7 @@ from ..reservoir.mechanistic import (
     GasBreakout, PressureHalo, ReservoirScenario, SaturationFront,
 )
 from ..reservoir.flow import FlowSettings, FlowSimulator
+from ..reservoir.gas import SolutionGas
 from ..reservoir.relperm import CoreyRelativePermeability
 from ..reservoir.state import initial_state
 from ..rockphysics.fluids import bubble_point
@@ -326,6 +327,26 @@ class Pipeline:
                 transition=b.transition)
         return self._baseline
 
+    def solution_gas(self) -> SolutionGas | None:
+        """The solution-gas model, or ``None`` when the oil is run dead.
+
+        The PVT is read from the rock-physics section rather than duplicated
+        here.  That section already has to describe this oil - Gassmann
+        needs its density and modulus - so giving the flow model its own
+        copy would let the two drift apart, and a reservoir whose seismic
+        sees live oil the flow cannot keep in solution is exactly the
+        inconsistency this was built to remove.
+        """
+        sim = self.config.simulation
+        if not sim.solution_gas:
+            return None
+        rock = self.config.rock_physics
+        return SolutionGas(
+            api=rock.api, gas_gravity=rock.gas_gravity, initial_gor=rock.gor,
+            temperature=rock.temperature,
+            critical_saturation=sim.critical_gas_saturation,
+            oil_compressibility=sim.oil_compressibility_per_psi / PSI)
+
     def flow_settings(self) -> FlowSettings:
         sim = self.config.simulation
         return FlowSettings(
@@ -338,7 +359,8 @@ class Pipeline:
             water_density=sim.water_density, oil_density=sim.oil_density,
             kv_over_kh=sim.kv_over_kh, gravity=sim.gravity,
             max_saturation_change=sim.max_saturation_change,
-            max_timestep_days=sim.max_timestep_days)
+            max_timestep_days=sim.max_timestep_days,
+            solution_gas=self.solution_gas())
 
     def flow(self, progress=None):
         """Run the two-phase flow simulation (requirement 7)."""
@@ -347,7 +369,8 @@ class Pipeline:
             baseline = self.baseline_state()
             simulator = FlowSimulator(
                 self.geology(), self.wells(), self.completions(), self.controls(),
-                baseline.pressure, baseline.sw, self.flow_settings())
+                baseline.pressure, baseline.sw, self.flow_settings(),
+                initial_sg=baseline.sg)
             self.result.flow = self._timed("flow", lambda: simulator.run(
                 sim.duration_days, sim.report_every_days, progress=progress))
             self.result.notes.append(
@@ -567,16 +590,21 @@ class Pipeline:
     def _check_bubble_point(self, states, result: QCResult) -> None:
         """Is the oil single-phase everywhere the flow model assumes it is?
 
-        The flow model has no gas phase: it cannot release gas however far the
-        pressure falls.  That is a defensible floor while the oil stays above
-        its bubble point and a silent fiction below it, and the rock physics
-        carries a GOR that says which.  Nothing compared the two until a
-        configuration turned up whose bubble point sat three times above any
-        pressure the reservoir ever saw - the seismic seeing live oil the flow
-        could never have kept in solution.
+        Without a solution-gas model the flow model has no gas phase: it
+        cannot release gas however far the pressure falls.  That is a
+        defensible floor while the oil stays above its bubble point and a
+        silent fiction below it, and the rock physics carries a GOR that says
+        which.  Nothing compared the two until a configuration turned up
+        whose bubble point sat three times above any pressure the reservoir
+        ever saw - the seismic seeing live oil the flow could never have kept
+        in solution.
 
-        Free gas is the one thing 4D seismic responds to most, so getting this
-        wrong is not a rounding error on the answer; it is the answer.
+        With the solution-gas model on, gas below the bubble point is no
+        longer a fiction but it is still immobile, so the question changes:
+        did it stay small enough for immobile to be a fair assumption?
+
+        Free gas is the one thing 4D seismic responds to most, so getting
+        this wrong is not a rounding error on the answer; it is the answer.
         """
         cfg = self.config.rock_physics
         pb = float(bubble_point(cfg.api, cfg.gas_gravity, cfg.gor, cfg.temperature))
@@ -587,21 +615,83 @@ class Pipeline:
         if not pressures:
             return
         lowest = float(min(p.min() for p in pressures))
-        if lowest < pb:
-            result.checks.append(Check(
-                Status.WARNING,
-                f"reservoir pressure falls to {pa_to_psi(lowest):,.0f} psi, below "
-                f"the {pa_to_psi(pb):,.0f} psi bubble point implied by GOR "
-                f"{cfg.gor:g} m3/m3 at {cfg.api:g} API; the flow model has no gas "
-                f"phase, so gas that would come out of solution there is neither "
-                f"flowed nor seen by the rock physics"))
-        else:
+        gas = self.solution_gas()
+
+        if gas is None:
+            if lowest < pb:
+                result.checks.append(Check(
+                    Status.WARNING,
+                    f"reservoir pressure falls to {pa_to_psi(lowest):,.0f} psi, below "
+                    f"the {pa_to_psi(pb):,.0f} psi bubble point implied by GOR "
+                    f"{cfg.gor:g} m3/m3 at {cfg.api:g} API; the flow model has no gas "
+                    f"phase, so gas that would come out of solution there is neither "
+                    f"flowed nor seen by the rock physics - set "
+                    f"simulation.solution_gas to let it out"))
+            else:
+                result.checks.append(Check(
+                    Status.PASS,
+                    f"oil stays above its {pa_to_psi(pb):,.0f} psi bubble point "
+                    f"everywhere (lowest reservoir pressure "
+                    f"{pa_to_psi(lowest):,.0f} psi), which is what the gas-free flow "
+                    f"model assumes"))
+            return
+
+        peak = max((float(s.sg[s.reservoir_mask].max()) for _, s in states.items()
+                    if s.reservoir_mask is not None and s.reservoir_mask.any()),
+                   default=0.0)
+        if peak <= gas.critical_saturation:
             result.checks.append(Check(
                 Status.PASS,
-                f"oil stays above its {pa_to_psi(pb):,.0f} psi bubble point "
-                f"everywhere (lowest reservoir pressure "
-                f"{pa_to_psi(lowest):,.0f} psi), which is what the gas-free flow "
-                f"model assumes"))
+                f"solution gas liberated to at most Sg {peak:.3f}, within the "
+                f"{gas.critical_saturation:g} critical gas saturation, so holding "
+                f"the free gas in place is a fair assumption (lowest reservoir "
+                f"pressure {pa_to_psi(lowest):,.0f} psi against a "
+                f"{pa_to_psi(pb):,.0f} psi bubble point)"))
+        else:
+            result.checks.append(Check(
+                Status.WARNING,
+                f"solution gas reached Sg {peak:.3f}, past the "
+                f"{gas.critical_saturation:g} critical gas saturation at which "
+                f"free gas starts to move; this model holds it where it formed, so "
+                f"beyond here it forms no gas cap, produces no free gas and "
+                f"overstates the gas left in place - the 4D response is indicative, "
+                f"not quantitative, and black oil is the instrument"))
+
+        flow = self.result.flow
+        if flow is None:
+            return
+        if flow.volume_closure_error > 0.02:
+            result.checks.append(Check(
+                Status.WARNING,
+                f"hydrocarbon volume closes only to "
+                f"{100 * flow.volume_closure_error:.1f}% of pore volume on average "
+                f"({100 * flow.peak_volume_closure_error:.0f}% at worst): the "
+                f"pressure equation carries one lumped compressibility and cannot "
+                f"enforce the volume balance a black-oil solve does, so the "
+                f"liberated gas is indicative rather than quantitative"))
+        if flow.clipped_cell_steps:
+            result.checks.append(Check(
+                Status.WARNING,
+                f"{flow.clipped_cell_steps:,} cell-steps liberated more gas than "
+                f"the pore space had room for and were clipped; gas is not "
+                f"conserved in those cells, and a reservoir that cannot hold its "
+                f"own gas is one whose pressure a black-oil solve would have held "
+                f"up instead"))
+        else:
+            caveat = ""
+            if flow.peak_volume_closure_error > 1.0:
+                caveat = (
+                    f"; the worst single cell is out by "
+                    f"{100 * flow.peak_volume_closure_error:.0f}%, which is a well "
+                    f"block - stock-tank oil arrives there faster than the volume "
+                    f"balance lets it leave, so the saturations in the perforated "
+                    f"cells themselves are not")
+            result.checks.append(Check(
+                Status.PASS,
+                f"hydrocarbon volume closes to "
+                f"{100 * flow.volume_closure_error:.2f}% of pore volume across the "
+                f"field, so the liberated gas is consistent with the room the "
+                f"reservoir had for it" + caveat))
 
     def _check_sampling(self, model: AcousticModel, result: QCResult) -> None:
         """Aperture, standoff and operator aliasing for the survey as configured.

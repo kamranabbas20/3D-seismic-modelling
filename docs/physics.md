@@ -96,6 +96,100 @@ true position, with 52% of the image energy inside a sphere of 0.3
 wavelengths that occupies 1.4% of the analysed volume. A flat reflector
 images at the correct depth.
 
+## Reservoir flow
+
+Two-phase, slightly compressible, three-dimensional IMPES on the reservoir
+cells of the geological model:
+
+```
+phi c_t dp/dt      = div( lambda_t K grad Phi ) + q_t
+phi dSw/dt + div( fw u_t ) = q_w
+```
+
+with `Phi = p - rho g z` the phase potential, Corey relative permeabilities,
+upstream mobility weighting, harmonic face transmissibilities, fault
+transmissibility multipliers and Peaceman well indices. Pressure is solved
+implicitly; saturation is advanced explicitly under a CFL limit on the
+saturation change.
+
+The saturation limit is checked against the flux the advance will actually
+use — the one the pressure solve produces, not the one standing before it.
+Checking only beforehand let 38 % of steps overshoot the limit, the worst by
+a factor of five. A step that fails the check is retried shorter with the
+pressure rolled back, because a saturation advanced over a different interval
+than the pressure it came from does not conserve mass.
+
+### Solution gas
+
+Optional, off by default. Enabling `simulation.solution_gas` adds dissolved
+gas as a tracked quantity and lets it come out of solution below the bubble
+point. Two conserved scalars per cell, both in standard volumes: stock-tank
+oil `N` and total gas `G`. Both ride the oil flux at the upstream cell's
+solution GOR. The split is arithmetic rather than iteration:
+
+```
+Rs = min( G/N , Rs_sat(p) )
+Sg = ( G - N Rs ) Bg(p) / Vp
+```
+
+Above the bubble point `G/N <= Rs_sat` and `Sg` is exactly zero, so no gas
+can appear where there can be none. Tracking `N` rather than deriving it
+from `So` is what makes that true: derive it, and the oil's own expansion as
+pressure falls has nowhere to go in a fixed pore volume, and the flash reads
+that surplus as gas hundreds of psi *above* the bubble point.
+
+The compressibility in the pressure equation becomes a field rather than a
+constant, because below the bubble point the hydrocarbons are not slightly
+compressible:
+
+```
+c_o = -(1/Bo) dBo/dp + (Bg/Bo) dRs/dp
+c_g = -(1/Bg) dBg/dp
+c_t = c_base + So c_o + Sg c_g
+```
+
+At a few hundred psi both terms are of order 1e-7 /Pa against the 4e-10 /Pa
+a dead-oil reservoir carries — two and a half orders of magnitude — and they
+are the whole reason a solution-gas drive declines slowly instead of
+collapsing to the bottom-hole pressure. Leaving them out is not a small error
+on the gas saturation, it is the error. The derivatives are taken numerically
+on this codebase's own PVT correlations, so the compressibility and the flash
+cannot disagree about the same oil.
+
+PVT is Standing's bubble point, Standing's `Bo`, and Batzle–Wang's `Z` for
+`Bg`. `Rs_sat(p)` is Standing's bubble point solved for the GOR rather than a
+second fit, so `Pb(Rs_sat(p)) == p` by construction and the flow model and the
+bubble-point QC check can never disagree about where the bubble point is.
+
+**What it does not do.** The liberated gas does not flow between cells. It
+appears where the oil was and stays there; only a well can take it, and only
+above the critical gas saturation. So: no gas cap forms, gas cannot segregate
+upwards or cone, and the produced GOR is capped near `Rs(p_wf)`. Those are
+fair while `Sg` stays below critical — which is where gas genuinely is
+immobile, and where a depleting producer spends its first years — and
+increasingly wrong above it.
+
+Because the pressure equation carries one lumped compressibility rather than
+a black-oil volume balance, `N Bo + Vp Sg` and `Vp (1 - Sw)` are not forced
+to agree. The discrepancy is measured rather than absorbed and reported as
+`FlowResult.volume_closure_error`, both pore-volume-weighted mean and worst
+cell. In practice the body of the reservoir closes to well under a percent
+and a well block can be out by half its pore volume, so both numbers are
+reported: either one alone misleads.
+
+### Validation
+
+| Check | Result |
+|---|---|
+| Material balance, accumulation vs. throughput | 1e-10 of throughput |
+| Cumulative oil, `max_dt` 30 vs. 5 days | 0.02 % |
+| Peak saturation change against the 0.05 limit | 0.0500, no overshoots |
+| `Pb(Rs_sat(p))` round trip | exact to 1e-9 |
+| Flash gas conservation, dissolved + free | exact to 1e-10 |
+| Free gas above the bubble point | exactly zero |
+| Gas conserved by transport + flash, no wells | 1e-9 over 20 steps |
+| Solution-gas drive vs. dead oil, same well | pressure held 50+ psi higher |
+
 ## Rock physics
 
 ```

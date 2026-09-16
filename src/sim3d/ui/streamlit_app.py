@@ -2344,14 +2344,37 @@ def page_flow() -> None:
     step = c.number_input("Max timestep (days)", 0.1, 365.0,
                           float(cfg.simulation.max_timestep_days), 1.0)
     gravity = d.checkbox("Gravity", value=cfg.simulation.gravity)
-    if (duration, report, step, gravity) != (
+    e, f = st.columns(2)
+    live = e.checkbox(
+        "Solution gas", value=cfg.simulation.solution_gas,
+        help="Let gas come out of solution where the pressure falls below the "
+             "bubble point. The PVT comes from the rock-physics section, so the "
+             "flow and the seismic describe the same oil. The liberated gas does "
+             "not flow between cells, so it is trustworthy while the gas "
+             "saturation stays below critical and indicative after that.")
+    critical = f.number_input(
+        "Critical gas saturation", 0.001, 0.30,
+        float(cfg.simulation.critical_gas_saturation), 0.005, format="%.3f",
+        help="Where free gas would start to move. This model holds it in place, "
+             "so this is the saturation past which the answer stops being "
+             "quantitative rather than a flow parameter.")
+    if (duration, report, step, gravity, live, critical) != (
             cfg.simulation.duration_days, cfg.simulation.report_every_days,
-            cfg.simulation.max_timestep_days, cfg.simulation.gravity):
+            cfg.simulation.max_timestep_days, cfg.simulation.gravity,
+            cfg.simulation.solution_gas, cfg.simulation.critical_gas_saturation):
         cfg.simulation.duration_days = duration
         cfg.simulation.report_every_days = report
         cfg.simulation.max_timestep_days = step
         cfg.simulation.gravity = gravity
+        cfg.simulation.solution_gas = live
+        cfg.simulation.critical_gas_saturation = critical
         invalidate()
+
+    if live:
+        gas = pipe.solution_gas()
+        st.caption(f"Bubble point {pa_to_psi(gas.bubble_point):,.0f} psi at "
+                   f"GOR {gas.initial_gor:g} m³/m³, {gas.api:g} API — gas comes "
+                   f"out below that and nowhere else.")
 
     if st.button("Run flow simulation", type="primary"):
         bar = st.progress(0.0, text="simulating")
@@ -2370,14 +2393,27 @@ def page_flow() -> None:
 
     st.success(f"{flow.n_timesteps:,} timesteps · material balance closes to "
                f"{flow.material_balance_error:.2e} of throughput")
+    if flow.gas_saturation:
+        peak = max(float(sg.max()) for sg in flow.gas_saturation)
+        critical = flow.settings.solution_gas.critical_saturation
+        message = (f"peak gas saturation {peak:.3f} against a critical "
+                   f"{critical:g} · hydrocarbon volume closes to "
+                   f"{100 * flow.volume_closure_error:.2f}% of pore volume on "
+                   f"average, {100 * flow.peak_volume_closure_error:.0f}% at "
+                   f"worst (almost always a well block)")
+        (st.warning if peak > critical else st.info)(message)
+    for note in flow.notes:
+        st.caption(f"note: {note}")
 
     st.markdown("**Field state through time**")
     day = st.select_slider("Day", options=[float(d) for d in flow.days],
                            value=float(flow.days[-1]))
     grid = pipe.geology().grid
     point = cursor_controls(grid)
-    what = st.radio("Volume", ("pressure", "water saturation", "ΔP", "ΔSw"),
-                    horizontal=True)
+    choices = ["pressure", "water saturation", "ΔP", "ΔSw"]
+    if flow.gas_saturation:
+        choices += ["gas saturation", "ΔSg", "solution GOR"]
+    what = st.radio("Volume", choices, horizontal=True)
     pressure, saturation = flow.at(day)
     p0, s0 = flow.at(flow.days[0])
     mask = pipe.geology().reservoir_mask
@@ -2387,6 +2423,15 @@ def page_flow() -> None:
         "ΔP": (np.where(mask, pa_to_psi(pressure - p0), np.nan), "diverging", "psi"),
         "ΔSw": (np.where(mask, saturation - s0, np.nan), "diverging", "fraction"),
     }
+    if flow.gas_saturation:
+        index = int(np.argmin(np.abs(np.asarray(flow.days) - day)))
+        sg = flow.gas_saturation[index]
+        lookup["gas saturation"] = (np.where(mask, sg, np.nan), "sequential",
+                                    "fraction")
+        lookup["ΔSg"] = (np.where(mask, sg - flow.gas_saturation[0], np.nan),
+                         "diverging", "fraction")
+        lookup["solution GOR"] = (np.where(mask, flow.solution_gor[index], np.nan),
+                                  "sequential", "m³/m³")
     volume, kind, unit = lookup[what]
     st.plotly_chart(ui.slice_figure(volume, grid, point,
                                     title=f"{what} — day {day:,.0f}", kind=kind,

@@ -16,10 +16,12 @@ from .mechanistic import (
 )
 from .relperm import CoreyRelativePermeability
 from .flow import FlowResult, FlowSettings, FlowSimulator, WellHistory
+from .gas import SolutionGas
 
 __all__ = [
     "ReservoirState", "initial_state", "PressureHalo", "SaturationFront",
     "GasBreakout", "ReservoirScenario", "TIME_STATES",
     "CoreyRelativePermeability", "FlowSettings", "FlowSimulator", "FlowResult",
+    "SolutionGas",
     "WellHistory",
 ]
