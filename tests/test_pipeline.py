@@ -1,6 +1,8 @@
 """End-to-end pipeline and CLI behaviour."""
 
 import pathlib
+from dataclasses import replace
+
 import numpy as np
 import pytest
 
@@ -648,6 +650,38 @@ def test_with_solution_gas_the_check_asks_a_different_question():
     gas = [m for m in messages if "critical gas saturation" in m]
     assert gas, f"no gas-saturation check among {len(messages)} checks"
     assert [m for m in messages if "hydrocarbon volume closes" in m]
+
+
+def test_the_volume_check_reports_whether_or_not_gas_was_clipped():
+    """Exactly one volume verdict, always, and independent of the clipping.
+
+    An edit once left the clipped-cell check sitting between the volume
+    check's `if` and its `else`, so the `else` bound to the wrong condition:
+    a run that clipped any gas reported no volume verdict at all, and a run
+    that clipped none but closed badly reported both the warning and the
+    pass. Neither showed up as an error - just a missing line in a report
+    nobody diffs.
+    """
+    from sim3d.reservoir.flow import FlowResult, FlowSettings
+    from sim3d.reservoir.gas import SolutionGas
+
+    def verdicts(closure, clipped):
+        config = tiny_config()
+        config.simulation.solution_gas = True
+        pipeline = Pipeline(config)
+        pipeline.flow()
+        pipeline.result.flow = replace(
+            pipeline.result.flow, volume_closure_error=closure,
+            peak_volume_closure_error=max(closure, 3.0),
+            clipped_cell_steps=clipped)
+        messages = [c.message for c in Pipeline.qc(pipeline).checks]
+        return ([m for m in messages if "hydrocarbon volume closes" in m],
+                [m for m in messages if "were clipped" in m])
+
+    for closure, clipped in ((0.001, 0), (0.001, 17), (0.5, 0), (0.5, 17)):
+        volume, clip = verdicts(closure, clipped)
+        assert len(volume) == 1, (closure, clipped, volume)
+        assert len(clip) == (1 if clipped else 0), (closure, clipped, clip)
 
 
 def test_dead_oil_raises_no_bubble_point_question():

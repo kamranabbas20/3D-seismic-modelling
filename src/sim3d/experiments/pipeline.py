@@ -669,14 +669,6 @@ class Pipeline:
                 f"pressure equation carries one lumped compressibility and cannot "
                 f"enforce the volume balance a black-oil solve does, so the "
                 f"liberated gas is indicative rather than quantitative"))
-        if flow.clipped_cell_steps:
-            result.checks.append(Check(
-                Status.WARNING,
-                f"{flow.clipped_cell_steps:,} cell-steps liberated more gas than "
-                f"the pore space had room for and were clipped; gas is not "
-                f"conserved in those cells, and a reservoir that cannot hold its "
-                f"own gas is one whose pressure a black-oil solve would have held "
-                f"up instead"))
         else:
             caveat = ""
             if flow.peak_volume_closure_error > 1.0:
@@ -692,6 +684,14 @@ class Pipeline:
                 f"{100 * flow.volume_closure_error:.2f}% of pore volume across the "
                 f"field, so the liberated gas is consistent with the room the "
                 f"reservoir had for it" + caveat))
+        if flow.clipped_cell_steps:
+            result.checks.append(Check(
+                Status.WARNING,
+                f"{flow.clipped_cell_steps:,} cell-steps liberated more gas than "
+                f"the pore space had room for and were clipped; gas is not "
+                f"conserved in those cells, and a reservoir that cannot hold its "
+                f"own gas is one whose pressure a black-oil solve would have held "
+                f"up instead"))
 
     def _check_sampling(self, model: AcousticModel, result: QCResult) -> None:
         """Aperture, standoff and operator aliasing for the survey as configured.

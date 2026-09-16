@@ -363,6 +363,41 @@ is the reason the compressibility has to be a field. By the end, 82 % of the
 reservoir carries gas above the critical saturation — which is also the run
 telling you it has left the regime where its own assumption holds.
 
+`examples/configs/dipping_wedge_gas.yaml` puts the same model in a
+40° dipping trap with two wells — updip producer, downdip water injector.
+
+![Solution gas in a 40 degree dipping trap](docs/figures/wedge-solution-gas.png)
+
+Gas appears only where the pressure is below the bubble point: all 6,390
+cells above the critical saturation are below it, at a mean 1,611 psi
+against 2,414 psi where there is none. It fills the updip oil leg from the
+crest down to x = 450 m while the injected water advances the other way,
+from the contact updip to x = 400 m. The two fronts are about to meet, which
+is the 4D discrimination question posed as a flow problem.
+
+![The producer takes the updip oil leg below its bubble point](docs/figures/wedge-solution-gas-history.png)
+
+The right-hand panel is this model's own limitation drawn to scale. The
+producing gas-oil ratio starts at the solution GOR of 60, lifts briefly
+above it as the well takes free gas out of its own block, then falls to 15.
+A real solution-gas drive does the opposite — the GOR climbs, often several
+fold, as the liberated gas becomes mobile and is produced. Here the gas
+stays in the rock, so the well only ever produces what is still dissolved,
+and the curve runs backwards. That is the number to look at when deciding
+whether this model or a black-oil one is the right instrument.
+
+Two things worth knowing about how that run was set up. The shipped
+`dipping_wedge_4d.yaml` carries the library-default GOR of 100 m³/m³, whose
+bubble point at 85 °C is 3,070 psi — against a reservoir spanning 2,427 to
+3,724 psi. Exactly half of it starts below its own bubble point, at day
+zero, while the baseline state carries Sg = 0 everywhere and no gas-oil
+contact. The gas variant sets 60 m³/m³ so the oil is single-phase to begin
+with. And on the original 2,250 STB/day rate control against VRR 0.98
+injection, the producer settles at 2,132 psi and peak Sg is exactly 0.000 —
+a voidage-balanced waterflood keeps the oil above its bubble point, which is
+the correct answer and the reason the gas config draws the well down to
+1,400 psi instead.
+
 ## What the platform will not do
 
 The rule is **no silent degradation**. The software never quietly coarsens
