@@ -1326,6 +1326,7 @@ def page_migration() -> None:
                "QC** has the same controls alongside the fold, offset and "
                "azimuth diagnostics.")
     _acquisition_controls(cfg, include_record=False)
+    _survey_layout(cfg, pipe)
     _acquisition_summary(cfg, pipe)
 
     st.subheader("Validation")
@@ -1424,6 +1425,49 @@ def _imaging_controls(cfg) -> None:
         img.max_offset = float(max_offset) if max_offset is not None else None
         img.offset_taper = offset_taper
         invalidate()
+
+
+def _survey_layout(cfg, pipe) -> None:
+    """The survey drawn as it is designed, against the model it sits in.
+
+    Every number above is a distance, and distances are read wrongly as
+    numbers.  A spread that "extends 1,800 m" means nothing until it is seen
+    against a 2,000 m model with an absorbing layer taking 120 m off each
+    face; a 180 m separation between sources and receivers is invisible in a
+    table and obvious in an elevation.  Both views are geometry only -
+    milliseconds - so they redraw on every edit rather than behind a button.
+    """
+    try:
+        acquisition = pipe.acquisition()
+    except Sim3DError as exc:
+        st.error(str(exc))
+        return
+
+    plan, side = st.tabs(["Plan view", "Elevation"])
+    with plan:
+        # A dense carpet draws tens of thousands of markers and the sources
+        # disappear underneath them; the toggle is the honest way out.
+        show_receivers = st.checkbox(
+            "Show receivers", value=acquisition.n_receivers <= 4000,
+            key="layout_show_receivers",
+            help=f"{acquisition.n_receivers:,} receivers. Hiding them makes "
+                 f"the shot layout visible when the carpet is dense.")
+        st.plotly_chart(ui.aerial_figure(
+            acquisition=acquisition, wells=pipe.wells(), domains=pipe.domains,
+            pml_nodes=cfg.solver.pml_nodes, show_receivers=show_receivers),
+            width="stretch")
+        st.caption("Drawn to scale. The survey must reach past the imaging "
+                   "target on every side — a spread that stops at its edge "
+                   "lights that edge from one side only.")
+    with side:
+        st.plotly_chart(ui.elevation_figure(
+            acquisition=acquisition, domains=pipe.domains,
+            pml_nodes=cfg.solver.pml_nodes), width="stretch")
+        st.caption("Depth down, same scale on both axes. What to look for: "
+                   "the standoff above the target, and daylight between the "
+                   "sources and the receivers — co-located, their injection "
+                   "near-fields reinforce into a band brighter than the "
+                   "reservoir.")
 
 
 def _acquisition_summary(cfg, pipe) -> None:

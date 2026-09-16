@@ -422,3 +422,38 @@ def test_pinning_the_footprint_does_not_start_from_an_illegal_survey():
     app.session_state.config.acquisition.source_extent = expected
     app.session_state.config.acquisition.receiver_extent = expected
     assert not Pipeline(app.session_state.config).geometry_qc().failed
+
+
+def test_the_survey_is_drawn_against_the_model_while_it_is_designed():
+    """Distances are read wrongly as numbers.
+
+    A spread that "extends 1,800 m" means nothing until it is seen against
+    the model it sits in and the absorbing layer taking its share off each
+    face. Both views are geometry only, so they redraw on every edit rather
+    than behind a button.
+    """
+    app = _goto(_app(), "Migration Setup")
+    assert not app.exception, app.exception[0].value
+    assert len(app.tabs) >= 2
+    assert [t.label for t in app.tabs][:2] == ["Plan view", "Elevation"]
+
+
+def test_the_elevation_pins_its_x_axis_to_the_model():
+    """Unpinned, the equal-scale constraint stretched a 2,000 m model out to
+    -1,000 - 3,000 m and drew the survey in the middle third of an empty
+    figure. Equal scale is the point of the view - a standoff has to read as
+    a distance - so the range is pinned instead of the constraint dropped."""
+    from sim3d.core.config import ExperimentConfig
+    from sim3d.experiments.pipeline import Pipeline
+    from sim3d.ui import components as ui
+
+    pipe = Pipeline(ExperimentConfig.load("examples/configs/demo_small.yaml"))
+    fig = ui.elevation_figure(acquisition=pipe.acquisition(),
+                              domains=pipe.domains,
+                              pml_nodes=pipe.config.solver.pml_nodes)
+    (gx0, gx1), _, _ = pipe.domains.geology.bounds
+    low, high = fig.layout.xaxis.range
+    assert low == pytest.approx(gx0, abs=0.05 * (gx1 - gx0))
+    assert high == pytest.approx(gx1, abs=0.05 * (gx1 - gx0))
+    assert fig.layout.yaxis.scaleanchor == "x"      # still to scale
+    assert fig.layout.yaxis.autorange == "reversed"  # depth downward

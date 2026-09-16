@@ -260,6 +260,96 @@ def aerial_figure(acquisition=None, wells=None, domains=None, pml_nodes: int = 0
     return fig
 
 
+def elevation_figure(acquisition=None, domains=None, pml_nodes: int = 0,
+                     height: int = 620) -> go.Figure:
+    """Side view of the survey: depth down, x across, drawn to scale.
+
+    The plan view answers whether the spread is wide enough.  It cannot
+    answer the other half of the question, which is how far above the target
+    the acquisition sits and how far the sources sit from the receivers -
+    and both decided the image on this project.  Sources and receivers 20 m
+    apart put their injection near-fields in the same slab of model, where
+    they reinforced each other into a band brighter than the reservoir;
+    acquisition less than about two wavelengths above the target overlaps it
+    with that same near-field, which no filter separates.
+
+    Depth increases downward, as a geologist reads it, and the axes share a
+    scale so a standoff reads as a distance rather than as whatever the
+    aspect ratio made of it.
+    """
+    fig = go.Figure()
+
+    def box(grid, colour, dash, label, width=1.5):
+        (x0, x1), _, (z0, z1) = grid.bounds
+        fig.add_shape(type="rect", x0=x0, x1=x1, y0=z0, y1=z1,
+                      line=dict(color=colour, width=width, dash=dash))
+        fig.add_annotation(x=x0, y=z0, text=label, showarrow=False,
+                           xanchor="left", yanchor="bottom",
+                           bgcolor=theme.LABEL_PLATE, borderpad=2,
+                           font=dict(color=theme.INK_MUTED, size=10))
+
+    if domains is not None:
+        box(domains.geology, theme.GRIDLINE, "solid", "geological model")
+        box(domains.propagation, theme.AXIS, "solid", "propagation domain")
+        if pml_nodes:
+            box(domains.propagation.padded(-pml_nodes), theme.AXIS, "dash",
+                "inner edge of the absorbing layer", width=1.0)
+        box(domains.target, theme.SERIES[2], "dot", "imaging target")
+
+    if acquisition is not None:
+        fig.add_trace(go.Scatter(
+            x=acquisition.receivers[:, 0], y=acquisition.receivers[:, 2],
+            mode="markers", name=f"receivers ({acquisition.n_receivers:,})",
+            marker=dict(symbol="square", size=5, color=theme.SERIES[0]),
+            hovertemplate="receiver<br>x=%{x:,.0f} m<br>z=%{y:,.0f} m<extra></extra>"))
+        fig.add_trace(go.Scatter(
+            x=acquisition.sources[:, 0], y=acquisition.sources[:, 2],
+            mode="markers", name=f"sources ({acquisition.n_sources:,})",
+            marker=dict(symbol="x", size=9, color=theme.SERIES[1],
+                        line=dict(width=1)),
+            hovertemplate="source<br>x=%{x:,.0f} m<br>z=%{y:,.0f} m<extra></extra>"))
+
+        # The standoff, drawn rather than described: the gap between the
+        # deepest instrument and the top of the target.
+        if domains is not None:
+            deepest = float(max(acquisition.sources[:, 2].max(),
+                                acquisition.receivers[:, 2].max()))
+            z_top = float(domains.target.bounds[2][0])
+            if z_top > deepest:
+                mid = float(np.mean(acquisition.sources[:, 0]))
+                fig.add_shape(type="line", x0=mid, x1=mid, y0=deepest, y1=z_top,
+                              line=dict(color=theme.INK_MUTED, width=1,
+                                        dash="dot"))
+                # Anchored right of the line and nudged up, clear of the
+                # target box's own label, which sits at its top-left corner.
+                fig.add_annotation(
+                    x=mid, y=0.5 * (deepest + z_top),
+                    text=f"standoff {z_top - deepest:,.0f} m", showarrow=False,
+                    xanchor="right", xshift=-8, yshift=-10,
+                    bgcolor=theme.LABEL_PLATE, borderpad=2,
+                    font=dict(color=theme.INK_SECONDARY, size=10))
+
+    # Pin x to the model rather than letting the equal-scale constraint choose
+    # it: unpinned, a 3,000 x 2,200 m model in a wide, short plot area stretched
+    # the axis out to -1,000 - 3,000 m and drew the survey in the middle third
+    # of a mostly empty figure.
+    x_range = None
+    if domains is not None:
+        (gx0, gx1), _, _ = domains.geology.bounds
+        pad = 0.02 * (gx1 - gx0)
+        x_range = [gx0 - pad, gx1 + pad]
+    fig.update_layout(**theme.plotly_layout(
+        height=height, margin=dict(l=60, r=20, t=44, b=48),
+        xaxis_title="x (m)", yaxis_title="depth (m)",
+        xaxis=dict(range=x_range, constrain="domain", gridcolor=theme.GRIDLINE,
+                   linecolor=theme.AXIS, tickfont=dict(color=theme.INK_MUTED)),
+        yaxis=dict(autorange="reversed", scaleanchor="x", scaleratio=1,
+                   constrain="domain", gridcolor=theme.GRIDLINE,
+                   linecolor=theme.AXIS, tickfont=dict(color=theme.INK_MUTED)),
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, x=0)))
+    return fig
+
+
 def fold_figure(x, y, fold, *, wells=None, height: int = 460,
                 title: str = "") -> go.Figure:
     """Common-midpoint fold in map view.
