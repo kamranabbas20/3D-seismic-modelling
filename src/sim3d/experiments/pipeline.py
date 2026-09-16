@@ -70,7 +70,7 @@ from ..wave.acoustic import (
 from ..wave.cpml import PMLSettings
 from ..wave.sources import PointSource
 from ..wave.wavelets import build_wavelet, wavelet_fmax
-from ..wells.completion import Completion, default_completions
+from ..wells.completion import layer_intersections, Completion, default_completions
 from ..wells.controls import ControlMode, WellControl, check_rates, suggest_control
 from ..wells.well import Well, WellSet, pattern
 
@@ -220,7 +220,7 @@ class Pipeline:
                 ws = WellSet([
                     Well(name=w["name"], role=w["role"], x=float(w["x"]),
                          y=float(w["y"]),
-                         perforation=tuple(w.get("perforation", (1200.0, 1350.0))))
+                         perforation=self._perforation(w))
                     for w in spec.wells])
             else:
                 ws = pattern(spec.pattern, **spec.parameters)
@@ -228,6 +228,37 @@ class Pipeline:
             self.result.wells = ws
             self.result.notes += [f"wells: {n}" for n in ws.check_spacing()]
         return self.result.wells
+
+    def _perforation(self, spec: dict) -> tuple[float, float]:
+        """The interval a well is open over, in metres.
+
+        An explicit ``perforation`` wins.  Otherwise it comes from the units
+        named in ``completions``, resolved against the geology - because the
+        fallback used to be a hard-coded 1,200-1,350 m, which is a depth from
+        whichever model happened to be first.  On a reservoir at 600 m that
+        put every well's nominal position 645 m below its own pay.
+
+        The flow simulation never noticed: it resolves ``completions`` itself
+        and perforates the right cells regardless.  Everything that reads
+        ``well.position`` did notice, silently - the mechanistic generator
+        centres its fronts and gas breakouts on that depth, so it was shaping
+        them into barren shale and returning a scenario in which nothing
+        anywhere had changed.
+        """
+        if "perforation" in spec:
+            lo, hi = spec["perforation"]
+            return float(lo), float(hi)
+        names = spec.get("completions") or []
+        if names:
+            probe = Well(name=spec["name"], role=spec["role"],
+                         x=float(spec["x"]), y=float(spec["y"]))
+            found = {item.name: item for item in
+                     layer_intersections(probe, self.geology())}
+            hit = [found[n] for n in names if n in found]
+            if hit:
+                return (float(min(i.top for i in hit)),
+                        float(max(i.base for i in hit)))
+        return 1200.0, 1350.0
 
     def completions(self) -> dict:
         """Open intervals per well, named by geological unit (requirement 2)."""

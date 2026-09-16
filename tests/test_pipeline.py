@@ -633,3 +633,35 @@ def test_dead_oil_raises_no_bubble_point_question():
     config.rock_physics.gor = 0.0
     assert not [c for c in Pipeline(config).qc().checks
                 if "bubble point" in c.message]
+
+
+def test_a_well_is_perforated_where_its_completions_are():
+    """The fallback perforation was a hard-coded 1,200-1,350 m.
+
+    On a reservoir at 600 m that put every well's nominal position 645 m
+    below its own pay. The flow simulation never noticed - it resolves
+    `completions` itself and perforates the right cells regardless - but
+    everything that reads `well.position` did, silently: the mechanistic
+    generator centres its water fronts and gas breakouts on that depth, so
+    it shaped them into barren shale and returned a scenario in which
+    nothing anywhere had changed. Zero 4D, no warning.
+    """
+    config = ExperimentConfig.load("examples/configs/five_layer_600m_dense.yaml")
+    pipeline = Pipeline(config)
+    (_, _), (_, _), (z0, z1) = pipeline.domains.target.bounds
+    for well in pipeline.wells():
+        top, base = well.perforation
+        assert z0 <= well.position[2] <= z1, (
+            f"{well.name} sits at {well.position[2]:,.0f} m, outside the "
+            f"{z0:,.0f}-{z1:,.0f} m target")
+        assert base > top
+
+
+def test_an_explicit_perforation_is_not_overridden():
+    """Resolving from `completions` is the fallback, not an override."""
+    config = tiny_config()
+    config.wells.wells = [
+        {"name": "W1", "role": "producer", "x": 600.0, "y": 600.0,
+         "perforation": [901.0, 977.0], "completions": ["reservoir"]}]
+    well = next(iter(Pipeline(config).wells()))
+    assert well.perforation == (901.0, 977.0)
