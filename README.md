@@ -212,13 +212,32 @@ different node, and the checkpoints are the whole point.
 sim3d gui
 ```
 
-Ten pages — Project, Geology, 3D Model, Wells & Completions, Flow
-Simulation, Rock Physics, Acquisition & QC, Simulation & Imaging, 4D
-Analysis, Scenarios. Every volume is shown
+Eleven pages — Project, Geology, 3D Model, Wells & Completions, Flow
+Simulation, Rock Physics, Synthetic Volume, Acquisition & QC, Migration
+Setup, 4D Analysis, Scenarios. Every volume is shown
 as three orthogonal sections through **one cursor shared across every page**
 (spec section 123), so the geological model, the property volumes and the
 migrated image — which live on different grids at different spacings — are
 always being inspected at the same place.
+
+**The app sets experiments up and models what is cheap; it does not
+migrate.** Flow, rock physics, sim2seis and the sparse vertical synthetics
+all run here, in seconds to minutes, because none of them propagates a
+wavefield. Full-wave modelling and RTM are hours of work, and a browser
+session is not a batch queue: a page that blocks for four hours cannot
+report progress honestly or survive a reload.
+
+So **Migration Setup** produces a configuration rather than an image. Every
+imaging, recording and scenario choice is made there, validated there —
+geometry, operator sampling, cost — and written out as a complete YAML for
+`examples/run_migration.py` to consume on whatever machine has the cores.
+The page prints the exact command, for a shell and for `sbatch`. The
+configuration can also be saved from the sidebar on any page.
+
+**4D Analysis** reads the result back: point it at the `images.npz` a run
+wrote and it renders the images against the same shared cursor, with NRMS
+where a baseline was migrated. That is the whole loop — set up here,
+propagate there, interpret here.
 
 ![3D model page](docs/gui-3d-model.png)
 

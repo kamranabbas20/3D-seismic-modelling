@@ -25,7 +25,7 @@ APP = str(pathlib.Path(__file__).resolve().parent.parent
 PAGES = [
     "Project", "Geology", "3D Model", "Wells & Completions", "Flow Simulation",
     "Rock Physics", "Synthetic Volume", "Acquisition & QC",
-    "Simulation & Imaging", "4D Analysis", "Scenarios",
+    "Migration Setup", "4D Analysis", "Scenarios",
 ]
 
 
@@ -160,7 +160,7 @@ def _multiselect(app: AppTest, fragment: str):
 def test_the_scenarios_to_simulate_are_chosen_on_the_page():
     """Cost is linear in the list: four earth models is four independent
     propagations of every shot, and "is the image clean?" needs one."""
-    app = _goto(_app(), "Simulation & Imaging")
+    app = _goto(_app(), "Migration Setup")
     assert not app.exception, app.exception[0].value
     _multiselect(app, "Earth models").set_value(["baseline"])
     app.run()
@@ -171,7 +171,7 @@ def test_the_scenarios_to_simulate_are_chosen_on_the_page():
 def test_the_baseline_is_always_simulated():
     """Every difference is measured against it; a monitor with nothing to
     subtract is not a 4D result."""
-    app = _goto(_app(), "Simulation & Imaging")
+    app = _goto(_app(), "Migration Setup")
     _multiselect(app, "Earth models").set_value(["combined"])
     app.run()
     assert not app.exception, app.exception[0].value
@@ -182,7 +182,7 @@ def test_the_scenario_order_is_canonical_however_it_was_clicked():
     """`decompose` indexes SCENARIO_NAMES positionally, so the stored order
     cannot be the order the boxes happened to be ticked in."""
     from sim3d.fourd.scenarios import SCENARIO_NAMES
-    app = _goto(_app(), "Simulation & Imaging")
+    app = _goto(_app(), "Migration Setup")
     _multiselect(app, "Earth models").set_value(["combined", "pressure_only",
                                                  "baseline"])
     app.run()
@@ -293,3 +293,57 @@ def test_durations_read_without_counting_zeros():
     assert _format_seconds(12.3) == "12.3 s"
     assert _format_seconds(600.0) == "10.0 min"
     assert _format_seconds(9489.0) == "2.64 h"
+
+
+# ------------------------------------- setup and modelling, not execution
+def test_no_page_offers_to_run_the_wave_modelling_or_the_migration():
+    """The architectural claim, asserted rather than described.
+
+    A survey worth migrating is hours of work and a browser session is not a
+    batch queue: the app decides *what* to run and writes it out, and the
+    running happens in `run_migration.py` somewhere with cores. If a button
+    that propagates a wavefield ever reappears here, this fails.
+    """
+    banned = ("run full-wave", "run 3d rtm", "run rtm", "migrate")
+    seen = []
+    for page in PAGES:
+        app = _goto(_app(), page)
+        assert not app.exception, f"{page}: {app.exception[0].value}"
+        for button in app.button:
+            label = (button.label or "").lower()
+            seen.append(label)
+            assert not any(b in label for b in banned), \
+                f"{page!r} offers {button.label!r}"
+    # Without this the test passes just as happily if the buttons stop being
+    # discoverable at all, which would make it worthless exactly when the app
+    # had been restructured.
+    assert seen, "found no buttons anywhere - the test is not looking at them"
+
+
+def test_the_migration_page_exports_a_configuration_that_loads_back():
+    """The page's whole output is a file, so the file has to be real.
+
+    `to_dict` round-trips through `from_dict`, and this is the check that it
+    still does for whatever the widgets have just written into the config -
+    a YAML the runner cannot load is worse than no YAML at all.
+    """
+    import yaml
+    from sim3d.core.config import ExperimentConfig
+
+    app = _goto(_app(), "Migration Setup")
+    assert not app.exception, app.exception[0].value
+    text = yaml.safe_dump(app.session_state.config.to_dict(), sort_keys=False)
+    rebuilt = ExperimentConfig.from_dict(yaml.safe_load(text))
+    assert rebuilt.content_hash() == app.session_state.config.content_hash()
+
+
+def test_the_configuration_can_be_saved_from_every_page():
+    """Losing a session's setup to a browser reload is how people stop using
+    a tool, so the download is in the sidebar rather than on one page."""
+    for page in ("Project", "Geology", "Migration Setup", "4D Analysis"):
+        app = _goto(_app(), page)
+        assert not app.exception, f"{page}: {app.exception[0].value}"
+        # A download is its own element type, not a button.
+        labels = [(b.label or "").lower() for b in app.download_button]
+        assert any("save configuration" in l for l in labels), \
+            f"{page!r} has no save button, only {labels}"

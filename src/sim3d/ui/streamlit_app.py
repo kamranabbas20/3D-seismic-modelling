@@ -4,13 +4,24 @@ Streamlit is only a frontend.  Every page calls
 :class:`sim3d.experiments.pipeline.Pipeline`, the same object the CLI drives,
 and no page computes anything scientific of its own.
 
-Two behaviours matter more than the layout:
+Three behaviours matter more than the layout:
+
+**The app sets experiments up and models what is cheap; it does not migrate.**
+Flow, rock physics, sim2seis and the sparse vertical synthetics all run here,
+because none of them propagates a wavefield.  Full-wave modelling and RTM used
+to run here too, behind two buttons, and that was always the wrong place for
+them: a survey worth migrating is hours of work, a browser session is not a
+batch queue, and a page that blocks for four hours can neither report progress
+honestly nor survive a reload.  What the app is good at is deciding *what* to
+run - the geometry, the sampling, the imaging choices, and the checks that
+catch a survey which will alias its operator before any of it costs anything.
+So **Migration Setup** writes a configuration instead, and
+``examples/run_migration.py`` runs it wherever the cores are; **4D Analysis**
+reads the resulting ``images.npz`` back in.
 
 **Expensive work never happens because a slider moved** (section 108).  Moving
 a front radius updates the reservoir state and the rock physics - seconds of
-work - and marks the shot gathers and the migrated images stale.  It does not
-re-run them.  Full-wave modelling and RTM happen only when their buttons are
-pressed.
+work - and marks everything downstream stale.  It does not re-run it.
 
 **Changing the science invalidates the science** (section 109).  The pipeline
 is keyed on the configuration's content hash, which covers every scientific
@@ -58,9 +69,12 @@ from sim3d.validation.qc import Status
 
 EXAMPLES = sorted(Path("examples/configs").glob("*.yaml")) if Path("examples/configs").is_dir() else []
 
+#: The app sets an experiment up and models everything that is cheap; the
+#: migration itself is a batch job somewhere else, so "Migration Setup"
+#: builds and validates the configuration for it rather than running it.
 PAGES = ("Project", "Geology", "3D Model", "Wells & Completions",
          "Flow Simulation", "Rock Physics", "Synthetic Volume",
-         "Acquisition & QC", "Simulation & Imaging", "4D Analysis",
+         "Acquisition & QC", "Migration Setup", "4D Analysis",
          "Scenarios")
 
 WELL_TYPES = ("producer", "injector")
@@ -183,6 +197,21 @@ def sidebar() -> str:
     page = st.sidebar.radio("Page", PAGES, key="page")
 
     st.sidebar.divider()
+    # Saving is reachable from every page, not only from the one that builds a
+    # migration: an experiment is worth keeping the moment its geology is
+    # right, and losing a session's setup to a browser reload is the kind of
+    # loss that makes people stop using a tool.
+    import yaml as _yaml
+    cfg = config()
+    _text = _yaml.safe_dump(cfg.to_dict(), sort_keys=False,
+                            default_flow_style=False)
+    st.sidebar.download_button(
+        "Save configuration", _text,
+        file_name=f"{cfg.project.name or 'experiment'}.yaml".replace(" ", "_"),
+        mime="application/x-yaml", width="stretch",
+        help="The complete experiment as YAML — every section, loadable by "
+             "the CLI and by the migration runner. This is the file the "
+             "Migration Setup page hands to a batch job.")
     st.sidebar.caption(f"config hash `{config().short_hash}`")
     pipe = st.session_state.get("pipeline")
     if pipe is not None:
@@ -1169,144 +1198,287 @@ def _scenario_controls(cfg) -> None:
                    f"full cost. The 4D decomposition needs all four.")
 
 
-def page_simulation() -> None:
+def page_migration() -> None:
+    """Build and validate the migration job; do not run it.
+
+    Full-wave modelling and RTM used to happen behind two buttons on this
+    page, inside the Streamlit process.  That was always the wrong place for
+    them: a survey worth migrating is hours of work, a browser session is not
+    a batch queue, and a page that blocks for four hours cannot show progress
+    honestly or survive a reload.  What the app is good at is deciding *what*
+    to run - the geometry, the sampling, the imaging choices, and the checks
+    that catch a survey which will alias its operator before any of it costs
+    anything.
+
+    So this page produces a configuration file rather than an image.
+    Everything the migration needs is set here, validated here, and written
+    out as a complete YAML for `examples/run_migration.py` to consume on
+    whatever machine has the cores.
+    """
+    cfg = config()
     pipe = pipeline()
-    st.title("Simulation & imaging")
-    _scenario_controls(config())
-    # Only an already-computed QC blocks the buttons: running it here would
-    # make merely opening the page cost a flow simulation.  Nothing unchecked
-    # gets modelled regardless, because the run itself calls pipe.qc first.
-    blocked = pipe.result.qc is not None and pipe.result.qc.failed
-    if blocked:
-        st.error("QC has failed for this configuration — see **Acquisition & QC**. "
-                 "Fix it before modelling.")
-    geometry = pipe.geometry_qc()
-    if geometry.failed:
-        st.error("The acquisition geometry does not fit the propagation domain "
-                 "— see **Acquisition & QC**.")
-        blocked = True
+    st.title("Migration setup")
+    st.caption("This page configures and validates the migration. It does not "
+               "run it — the run is a batch job, and the YAML below is its "
+               "only input.")
 
-    a, b = st.columns(2)
-    if a.button("Run full-wave simulation", type="primary", disabled=blocked):
-        progress = st.progress(0.0, text="modelling")
-        total = {"n": 0}
+    _scenario_controls(cfg)
 
-        models = max(len(config().fourd.scenarios), 1)
+    st.subheader("Imaging")
+    _imaging_controls(cfg)
 
-        def report(name, done, count):
-            total["n"] += 1
-            progress.progress(min(total["n"] / (count * models), 1.0),
-                              text=f"{name}: shot {done} of {count}")
-        try:
-            if stage("Running QC", pipe.qc).failed:
-                raise Sim3DError(
-                    "QC failed for this configuration — see Acquisition & QC. "
-                    "sim3d will not adjust the grid, the bandwidth or the "
-                    "geometry for you.")
-            pipe.simulate(progress=report)
-        except Sim3DError as exc:
-            st.error(str(exc))
-        progress.empty()
-    with st.expander("Imaging settings", expanded=not pipe.result.images):
-        img = config().imaging
-        c1, c2 = st.columns(2)
-        condition = c1.selectbox(
-            "Imaging condition", list(IMAGING_CONDITIONS),
-            index=list(IMAGING_CONDITIONS).index(img.imaging_condition),
-            help="source_normalized divides by the source illumination, which "
-                 "is what keeps a bright shallow event from setting the scale "
-                 "for the whole image.")
-        laplacian = c2.checkbox(
-            "Laplacian artefact filter", value=img.laplacian_filter,
-            help="Applied as -∇², not ∇². A Laplacian turns a peak into a "
-                 "trough, so the unsigned operator inverts the polarity of "
-                 "every reflector — which it did here until it was caught.")
-        taper = c1.slider(
-            "Near-field taper (wavelengths)", 0.0, 2.0,
-            float(img.taper_wavelengths), 0.25,
-            help="Zeroes the image within this radius of any source or "
-                 "receiver. Those are injection points and the wavefield "
-                 "around one is a singularity no imaging condition removes — "
-                 "57× the reservoir amplitude on the first run here.")
-        start = c2.number_input(
-            "Correlation start (s, 0 = from t=0)",
-            0.0, 2.0, float(img.correlation_start_time or 0.0), 0.01,
-            help="Nothing reflected from the target can arrive sooner than "
-                 "the two-way time to it, so anything correlated before that "
-                 "is near-field by construction. Leave at 0 to derive it from "
-                 "the geometry.")
-        c3, c4 = st.columns(2)
-        scale = c3.slider("Migration velocity scale", 0.90, 1.10,
-                          float(img.velocity_scale), 0.01,
-                          help="1.0 migrates with the true model. Anything "
-                               "else is a deliberate velocity-error experiment.")
-        smooth = c4.slider("Migration velocity smoothing (m)", 0.0, 200.0,
-                           float(img.velocity_smoothing), 10.0)
+    st.subheader("Recording")
+    a, b, c = st.columns(3)
+    record = a.number_input(
+        "Record length (s)", 0.05, 8.0, float(cfg.solver.record_length), 0.05,
+        help="Long enough for the deepest reflection to arrive at the furthest "
+             "offset, and no longer: every extra second is propagated for "
+             "every shot.")
+    pml = b.number_input(
+        "Absorbing layer (nodes)", 4, 40, int(cfg.solver.pml_nodes), 1,
+        help="Too few and the domain edges reflect back into the image. The "
+             "layer eats this many cells from each face, and no source or "
+             "receiver may sit inside it.")
+    order = c.selectbox(
+        "Spatial order", (2, 4, 6, 8),
+        index=(2, 4, 6, 8).index(int(cfg.solver.spatial_order)),
+        help="8th order needs about 5.25 cells per minimum wavelength for 1 % "
+             "phase error; a lower order needs more cells, not fewer.")
+    if (record != cfg.solver.record_length or int(pml) != cfg.solver.pml_nodes
+            or int(order) != cfg.solver.spatial_order):
+        cfg.solver.record_length = float(record)
+        cfg.solver.pml_nodes = int(pml)
+        cfg.solver.spatial_order = int(order)
+        invalidate()
 
-        changed = (condition != img.imaging_condition
-                   or laplacian != img.laplacian_filter
-                   or taper != img.taper_wavelengths
-                   or start != (img.correlation_start_time or 0.0)
-                   or scale != img.velocity_scale
-                   or smooth != img.velocity_smoothing)
-        if changed:
-            img.imaging_condition = condition
-            img.laplacian_filter = bool(laplacian)
-            img.taper_wavelengths = float(taper)
-            img.correlation_start_time = float(start) if start > 0 else None
-            img.velocity_scale = float(scale)
-            img.velocity_smoothing = float(smooth)
-            invalidate()
-            st.caption("Changed — the image is stale, the gathers are not. "
-                       "Re-run the RTM only.")
+    st.subheader("Acquisition")
+    st.caption("The geometry is edited on **Acquisition & QC**, where the fold "
+               "and offset diagnostics are. The verdict that matters for the "
+               "migration is repeated below.")
+    _acquisition_summary(cfg, pipe)
 
-    if b.button("Run 3D RTM", disabled=blocked or not pipe.result.gathers):
-        progress = st.progress(0.0, text="migrating")
-        total = {"n": 0}
+    st.subheader("Validation")
+    _migration_validation(cfg, pipe)
 
-        models = max(len(config().fourd.scenarios), 1)
+    st.subheader("The configuration")
+    _config_export(cfg, name_hint="migration")
 
-        def report(name, done, count):
-            total["n"] += 1
-            progress.progress(min(total["n"] / (count * models), 1.0),
-                              text=f"{name}: shot {done} of {count}")
-        try:
-            pipe.migrate(progress=report)
-        except Sim3DError as exc:
-            st.error(str(exc))
-        progress.empty()
 
-    _sparse_section(pipe)
-    _timings_panel(pipe)
+def _imaging_controls(cfg) -> None:
+    """Every imaging choice the migration will make, in one place."""
+    img = cfg.imaging
+    c1, c2 = st.columns(2)
+    condition = c1.selectbox(
+        "Imaging condition", list(IMAGING_CONDITIONS),
+        index=list(IMAGING_CONDITIONS).index(img.imaging_condition),
+        help="source_normalized divides by the source illumination, which is "
+             "what keeps a bright shallow event from setting the scale for "
+             "the whole image.")
+    laplacian = c2.checkbox(
+        "Laplacian artefact filter", value=img.laplacian_filter,
+        help="Applied as -∇², not ∇². A Laplacian turns a peak into a trough, "
+             "so the unsigned operator inverts the polarity of every "
+             "reflector — which it did here until it was caught.")
+    taper = c1.slider(
+        "Near-field taper (wavelengths)", 0.0, 2.0,
+        float(img.taper_wavelengths), 0.25,
+        help="Zeroes the image within this radius of any source or receiver. "
+             "Those are injection points and the wavefield around one is a "
+             "singularity no imaging condition removes — 57× the reservoir "
+             "amplitude on the first run here.")
+    start = c2.number_input(
+        "Correlation start (s, 0 = from t=0)", 0.0, 2.0,
+        float(img.correlation_start_time or 0.0), 0.01,
+        help="Nothing reflected from the target can arrive sooner than the "
+             "two-way time to it, so anything correlated before that is "
+             "near-field by construction. Leave at 0 to derive it from the "
+             "geometry.")
 
-    if not pipe.result.gathers:
-        n = len(config().fourd.scenarios)
-        st.info(f"No shot gathers yet. Modelling {n} earth "
-                f"model{'s' if n != 1 else ''} is minutes of work, so it "
-                f"happens only when you ask for it.")
+    c3, c4 = st.columns(2)
+    limit_aperture = c3.checkbox(
+        "Limit the aperture by offset", value=img.max_offset is not None,
+        help="RTM has no per-trace aperture the way a Kirchhoff sum does, so "
+             "the only place to choose which angles are migrated is the "
+             "gather. The aliasing limit V/(4·f·sinθ) is set by the steepest "
+             "angle actually summed, and a long line subtends a wide one at "
+             "its ends whether or not those traces carry anything.")
+    max_offset = img.max_offset
+    offset_taper = img.offset_taper
+    if limit_aperture:
+        max_offset = c3.number_input(
+            "Maximum offset (m)", 50.0, 20000.0,
+            float(img.max_offset if img.max_offset is not None else 1000.0), 10.0,
+            help="For a reflector h below the acquisition, an incidence angle "
+                 "θ is an offset of 2·h·tan θ.")
+        offset_taper = c4.number_input(
+            "Offset taper width (m)", 0.0, 5000.0,
+            float(img.offset_taper if img.offset_taper is not None
+                  else 0.2 * float(max_offset)), 10.0,
+            help="A hard cut is a step in the summed wavefield and images as "
+                 "its own edge. 0 uses 20 % of the maximum offset.")
+        offset_taper = float(offset_taper) or None
+    else:
+        max_offset = None
+
+    c5, c6 = st.columns(2)
+    scale = c5.slider("Migration velocity scale", 0.90, 1.10,
+                      float(img.velocity_scale), 0.01,
+                      help="1.0 migrates with the true model. Anything else is "
+                           "a deliberate velocity-error experiment.")
+    smooth = c6.slider("Migration velocity smoothing (m)", 0.0, 200.0,
+                       float(img.velocity_smoothing), 10.0)
+    mute = c5.checkbox(
+        "Mute the direct arrival", value=img.mute_direct_arrival,
+        help="A migration maps an event at time t onto |x−S| + |x−R| = v·t. A "
+             "reflection has a stationary point on that surface; a direct "
+             "arrival has none, so it paints the whole surface as a smile.")
+
+    changed = (condition != img.imaging_condition
+               or laplacian != img.laplacian_filter
+               or taper != img.taper_wavelengths
+               or start != (img.correlation_start_time or 0.0)
+               or scale != img.velocity_scale
+               or smooth != img.velocity_smoothing
+               or mute != img.mute_direct_arrival
+               or max_offset != img.max_offset
+               or offset_taper != img.offset_taper)
+    if changed:
+        img.imaging_condition = condition
+        img.laplacian_filter = bool(laplacian)
+        img.taper_wavelengths = float(taper)
+        img.correlation_start_time = float(start) if start > 0 else None
+        img.velocity_scale = float(scale)
+        img.velocity_smoothing = float(smooth)
+        img.mute_direct_arrival = bool(mute)
+        img.max_offset = float(max_offset) if max_offset is not None else None
+        img.offset_taper = offset_taper
+        invalidate()
+
+
+def _acquisition_summary(cfg, pipe) -> None:
+    """Aperture, standoff and operator sampling, read-only.
+
+    The same numbers the acquisition page shows, repeated here because they
+    decide whether this migration is worth running at all - and because the
+    one that matters most, the operator limit, was for a long time reachable
+    only from a page nobody opened before a batch run.
+    """
+    try:
+        acquisition = pipe.acquisition()
+    except Sim3DError as exc:
+        st.error(str(exc))
         return
+    a, b, c, d = st.columns(4)
+    a.metric("Sources", f"{acquisition.n_sources:,}")
+    b.metric("Receivers", f"{acquisition.n_receivers:,}")
+    c.metric("Traces", f"{acquisition.n_sources * acquisition.n_receivers:,}")
+    d.metric("Shot spacing", f"{cfg.acquisition.source_spacing:,.0f} m")
 
-    st.subheader("Shot gathers")
-    scenario = st.radio("Earth model", list(pipe.result.gathers), horizontal=True)
-    records = pipe.result.gathers[scenario]
-    index = st.slider("Shot", 0, len(records) - 1, 0)
-    record = records[index]
-    st.plotly_chart(ui.gather_figure(
-        record.traces, record.dt,
-        title=f"{scenario} — shot {index + 1} of {len(records)}"), width="stretch")
-    st.caption("Raw modelled amplitudes. Display gain is never applied to data "
-               "that will be migrated or differenced.")
+    earth = pipe.result.earth
+    if earth is None:
+        st.info("The operator-sampling check needs a velocity, which means the "
+                "rock physics. Open **Rock Physics** once and it will appear "
+                "here — the geometry above is free, that number is not.")
+        return
+    (_, _), (_, _), (z_top, _) = pipe.domains.target.bounds
+    report = sampling_report(acquisition, z_top,
+                             float(np.median(earth.models["baseline"].vp)),
+                             pipe.fmax, cfg.acquisition.source_spacing,
+                             cfg.acquisition.receiver_spacing)
+    a, b, c = st.columns(3)
+    a.metric("Aperture", f"{report.aperture_deg:.0f}°")
+    b.metric("Standoff", f"{report.standoff_wavelengths:.1f} λ")
+    c.metric("Operator limit", f"{report.operator_limit:,.0f} m")
+    notes = report.notes()
+    for note in notes:
+        st.warning(note)
+    if not notes:
+        st.success(f"Source spacing is {report.factor(cfg.acquisition.source_spacing):.1f}× "
+                   f"the operator limit and receiver spacing "
+                   f"{report.factor(cfg.acquisition.receiver_spacing):.1f}× — "
+                   f"within the tolerance the checks apply.")
 
-    if pipe.result.images:
-        st.subheader("Migrated images")
-        grid = pipe.domains.propagation
-        point = cursor_controls(grid)
-        which = st.radio("Image", list(pipe.result.images), horizontal=True,
-                         key="image_pick")
-        st.plotly_chart(ui.slice_figure(
-            pipe.result.images[which].image, grid, point,
-            title=f"RTM — {which}", kind="diverging", unit="amplitude",
-            wells=pipe.wells()), width="stretch")
+
+def _migration_validation(cfg, pipe) -> None:
+    """Everything that can be known before the run, and what it will cost."""
+    geometry = pipe.geometry_qc()
+    failed = [c for c in geometry.checks if c.status is Status.FAIL]
+    warned = [c for c in geometry.checks if c.status is Status.WARNING]
+    for check in failed:
+        st.error(check.message)
+    for check in warned:
+        st.warning(check.message)
+    if not failed and not warned:
+        st.success("Geometry fits the propagation domain with room for the "
+                   "absorbing layer.")
+
+    st.caption("The full QC also checks dispersion and stability on every "
+               "scenario, which needs the flow simulation and the rock "
+               "physics behind it. Run it once the model is settled.")
+    if st.button("Run full QC"):
+        result = stage("Running QC", pipe.qc)
+        if result is not None:
+            for check in result.checks:
+                if check.status is Status.FAIL:
+                    st.error(check.message)
+                elif check.status is Status.WARNING:
+                    st.warning(check.message)
+            if not result.failed:
+                st.success("QC passed.")
+
+    if st.button("Estimate the cost"):
+        estimate = stage("Planning", pipe.plan)
+        if estimate is not None:
+            a, b, c = st.columns(3)
+            a.metric("Cost class", estimate.cost_class.name)
+            b.metric("Cell-steps", f"{estimate.cell_steps:.2e}")
+            c.metric("Disk", f"{estimate.disk_bytes / 2 ** 30:.1f} GB")
+            st.caption("Wall time depends on the machine that runs it. "
+                       "`run_migration.py --check` benchmarks that machine "
+                       "and reports the hours before anything is propagated.")
+
+
+def _config_export(cfg, name_hint: str = "experiment") -> None:
+    """Write the configuration out, complete and loadable.
+
+    `to_dict` round-trips through `from_dict`, so what downloads here is what
+    the pipeline will build - not a summary of it, and not the example file
+    it started from.
+    """
+    import yaml
+
+    # One slug for the file and for the output directory: a project named
+    # with spaces produced a download called "my run.yaml" and a command with
+    # an unquoted path in it, which is a broken command.
+    slug = (cfg.project.name or name_hint).replace(" ", "_")
+    filename = st.text_input("File name", f"{slug}.yaml",
+                             key=f"export_name_{name_hint}")
+    text = yaml.safe_dump(cfg.to_dict(), sort_keys=False, default_flow_style=False)
+
+    a, b = st.columns([1, 3])
+    a.download_button("Download YAML", text, file_name=filename,
+                      mime="application/x-yaml", type="primary",
+                      key=f"export_button_{name_hint}")
+    b.caption(f"{len(text.splitlines()):,} lines · config hash "
+              f"`{cfg.short_hash}` · loads with `ExperimentConfig.load`")
+
+    st.markdown("**Then, on the machine with the cores:**")
+    st.code(f"python examples/run_migration.py {filename} --check\n"
+            f"python examples/run_migration.py {filename} "
+            f"--out runs/{slug} --migrate difference",
+            language="bash")
+    st.caption("`--check` benchmarks that machine and reports the wall time "
+               "before propagating anything. `--migrate difference` images the "
+               "4D only, at half the cost of also migrating the baseline.")
+    with st.expander("Under a scheduler"):
+        st.code(f"sbatch examples/slurm_migration.sbatch {filename} "
+                f"$PWD/runs/{slug} difference",
+                language="bash")
+        st.caption("One task, many cores, no GPU — the batch script explains "
+                   "why in its header. It checkpoints every shot, so a job "
+                   "that runs out of wall clock resumes rather than restarts.")
+    with st.expander("Preview the YAML"):
+        st.code(text, language="yaml")
 
 
 def _sparse_section(pipe) -> None:
@@ -1565,6 +1737,12 @@ def page_sim2seis() -> None:
                    "fluid one — the reason to carry more than one stack.")
     st.caption(f"{base.megabytes:,.0f} MB per earth model in memory.")
 
+    # Sparse synthetics live here now rather than with the migration: they
+    # propagate nothing either, and grouping the two propagation-free seismic
+    # modes together is what makes the page a modelling page.
+    st.divider()
+    _sparse_section(pipe)
+
 
 def _time_slices(cube, base, stack: str, scenario: str) -> None:
     """Inline and crossline sections against the two-way time axis."""
@@ -1584,12 +1762,24 @@ def _time_slices(cube, base, stack: str, scenario: str) -> None:
 
 
 def page_fourd() -> None:
+    """4D on whatever exists: sim2seis here, migrated images from elsewhere.
+
+    The app no longer migrates, so the migrated volumes this page used to
+    read from memory now arrive as a file written by `run_migration.py` on
+    whichever machine ran it. Everything that needs no propagation -
+    the property-space decomposition, the sim2seis 4D - is computed here as
+    it always was.
+    """
     pipe = pipeline()
     st.title("4D analysis")
+    _migrated_results_section(pipe)
+
     if not pipe.result.images:
-        st.info("Run the simulation and RTM on the **Simulation & Imaging** page "
-                "first. The property-space decomposition on the **Rock Physics** "
-                "page needs neither and is available now.")
+        st.divider()
+        st.info("The seismic-space decomposition below needs all four scenarios "
+                "migrated, which happens outside the app. The property-space "
+                "decomposition on **Rock Physics** and the sim2seis 4D on "
+                "**Synthetic Volume** need neither and are available now.")
         return
 
     grid = pipe.domains.propagation
@@ -1639,6 +1829,61 @@ def page_fourd() -> None:
                "ΔP and ΔSw is the most direct way to see whether an anomaly "
                "tracks the pressure halo or the flood front.")
 
+
+
+def _migrated_results_section(pipe) -> None:
+    """Load and show an images.npz written by a migration run elsewhere.
+
+    This is the return leg of the split: the app builds the configuration,
+    a batch job somewhere else does the propagating, and the result comes
+    back here as a file rather than as a four-hour page load.
+    """
+    st.subheader("Migrated images from a run")
+    st.caption("Point this at the `images.npz` that `run_migration.py` wrote. "
+               "Nothing is propagated here — the file already holds the image.")
+    path_text = st.text_input("Path to images.npz", key="images_path",
+                              placeholder="runs/dense/images.npz")
+    if not path_text:
+        return
+    path = Path(path_text).expanduser()
+    if not path.exists():
+        st.error(f"No such file: {path}")
+        return
+    try:
+        loaded = np.load(path)
+        keys = [k for k in loaded.files if k not in ("origin", "spacing")]
+        origin = tuple(float(v) for v in loaded["origin"])
+        spacing = tuple(float(v) for v in loaded["spacing"])
+    except (OSError, ValueError, KeyError) as exc:
+        st.error(f"Could not read {path.name}: {exc}")
+        return
+    if not keys:
+        st.error(f"{path.name} holds no images, only the grid.")
+        return
+
+    from sim3d.core.grid import Grid3D
+    grid = Grid3D(origin, spacing, loaded[keys[0]].shape)
+    st.caption(f"{path.name} · {', '.join(sorted(keys))} · grid {grid.shape} "
+               f"at {spacing[0]:g} m, origin {origin}")
+    which = st.radio("Image", sorted(keys), horizontal=True, key="loaded_image")
+    point = cursor_controls(grid)
+    st.plotly_chart(ui.slice_figure(
+        loaded[which], grid, point, title=which.replace("_", " "),
+        kind="diverging", unit="amplitude", wells=pipe.wells()), width="stretch")
+
+    # NRMS needs a baseline to normalise by, and a run asked only for the
+    # difference will not have one.
+    base_key = "baseline" if "baseline" in keys else None
+    monitors = [k for k in keys if k.startswith("monitor_")]
+    if base_key and monitors:
+        st.dataframe({k.replace("monitor_", ""): {
+            "NRMS (%)": round(float(nrms(loaded[base_key], loaded[k])), 3)}
+            for k in monitors}, width="stretch")
+    elif not base_key:
+        st.caption("No baseline image in this file, so NRMS is undefined — it "
+                   "is normalised by the baseline. A run made with "
+                   "`--migrate difference` writes the 4D alone, which is the "
+                   "cheaper half and usually the point.")
 
 
 def page_model3d() -> None:
@@ -2116,7 +2361,7 @@ PAGE_FUNCTIONS = {
     "Rock Physics": page_rockphysics,
     "Synthetic Volume": page_sim2seis,
     "Acquisition & QC": page_acquisition,
-    "Simulation & Imaging": page_simulation,
+    "Migration Setup": page_migration,
     "4D Analysis": page_fourd,
     "Scenarios": page_scenarios,
 }
