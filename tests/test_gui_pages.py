@@ -457,3 +457,52 @@ def test_the_elevation_pins_its_x_axis_to_the_model():
     assert high == pytest.approx(gx1, abs=0.05 * (gx1 - gx0))
     assert fig.layout.yaxis.scaleanchor == "x"      # still to scale
     assert fig.layout.yaxis.autorange == "reversed"  # depth downward
+
+
+def _widget(app: AppTest, collection: str, key: str):
+    for widget in getattr(app, collection):
+        if widget.key == key:
+            return widget
+    raise AssertionError(f"no {collection} with key {key!r}")
+
+
+def test_geology_page_offers_every_template():
+    """The structure was configuration-only: the page could show you the
+    earth and let you retouch one layer's petrophysics, but not change how
+    many layers there were, what dipped, or what pinched out."""
+    from sim3d.geology.templates import TEMPLATES
+
+    app = _goto(_app(), "Geology")
+    chooser = _widget(app, "selectbox", "geo_template")
+    assert set(chooser.options) == set(TEMPLATES)
+    assert "layer_cake" in chooser.options
+
+
+def test_choosing_a_template_exposes_its_own_parameters():
+    """Read off the signature, so a template that gains a dial gains a
+    control without this page being touched."""
+    app = _goto(_app(), "Geology")
+    _widget(app, "selectbox", "geo_template").set_value("three_layer")
+    app.run()
+    keys = {widget.key for widget in app.number_input}
+    assert "tmpl_three_layer_dip" in keys
+    assert "tmpl_three_layer_gross" in keys
+
+
+def test_the_layer_cake_editor_appears_with_its_units_table():
+    app = _goto(_app(), "Geology")
+    _widget(app, "selectbox", "geo_template").set_value("layer_cake")
+    app.run()
+    assert _widget(app, "selectbox", "cake_style").options == [
+        "flat", "dipping", "anticline", "syncline"]
+    assert _widget(app, "number_input", "cake_datum") is not None
+    assert not app.exception
+
+
+def test_the_geology_page_still_has_no_execution_button():
+    """Setup, not execution — the rule the Migration restructure set."""
+    app = _goto(_app(), "Geology")
+    labels = [button.label for button in app.button]
+    assert labels, "no buttons found at all, so this check proves nothing"
+    assert not [label for label in labels
+                if any(word in label.lower() for word in ("run", "migrate"))]

@@ -96,6 +96,46 @@ true position, with 52% of the image energy inside a sphere of 0.3
 wavelengths that occupies 1.4% of the analysed volume. A flat reflector
 images at the correct depth.
 
+## Stratigraphy
+
+Horizons are surfaces `z = f(x, y)`, positive down, composed additively, so
+an anticline on a regional dip is a sum and needs no special case. The
+primitives are `Flat`, `Dipping`, `Anticline`, `Syncline`, and three that
+exist for pinchouts: `Wedge` and `Lens` are *thicknesses* rather than
+horizons, and `Truncated` clamps a surface so it can touch the one above
+but never cross it.
+
+`build_geology` enforces one invariant: horizons are ordered downwards and
+may touch but never cross. A crossing horizon is not a structure, and a
+model that contains one has no well-defined layering.
+
+The `layer_cake` template satisfies that invariant by construction rather
+than by checking. It stacks units by thickness:
+
+```
+top[0]   = datum + relief
+top[k+1] = top[k] + thickness[k](x, y),     thickness >= 0
+```
+
+Because each thickness is non-negative, the sequence of tops is monotone
+non-decreasing whatever the thicknesses do across the map. A thickness that
+reaches zero is a pinchout: the base meets the top, the unit is absent
+there, and the units below rise to meet it rather than leaving a gap. The
+alternative — naming a depth per horizon and deforming them independently —
+can produce a crossing from any structural edit, which is why `structure`
+applies to the whole package.
+
+### Validation
+
+| Check | Result |
+|---|---|
+| Wedge thickness, monotone and never negative | exact |
+| Lens thickness at centre and outside its radius | full, zero |
+| Horizon ordering under a pinchout plus 10° dip | no crossing |
+| Unit thickness against what was asked for | exact to 1e-9 |
+| Fold relief over the crest against `amplitude` | within 5 % |
+| Reservoir flag, facies default vs. explicit override | both honoured |
+
 ## Reservoir flow
 
 Two-phase, slightly compressible, three-dimensional IMPES on the reservoir

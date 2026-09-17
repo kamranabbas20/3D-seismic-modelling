@@ -295,6 +295,53 @@ real target: a 3 km model with a faulted anticline, two injectors and three
 producers. `sim3d plan` reports it as VERY HIGH and quotes a runtime only
 against a measured throughput.
 
+## Building the earth
+
+Nine ready-made templates — flat, dipping, anticline, fault compartment,
+channel, lens, stacked sands, three-layer, five-layer — plus `layer_cake`,
+the general one they are special cases of. All of it is editable from the
+**Geology** page: pick a template and its own parameters appear (read off
+its signature, so a template that gains a dial gains a control), or choose
+`layer_cake` and edit the units in a table — add rows, delete rows, set
+thickness, facies, reservoir flag and petrophysics per unit. A section
+through the model redraws as you type, before anything is built, and warns
+about what the grid or the wavelet will not carry.
+
+### Pinchouts
+
+`layer_cake` stacks units by **thickness**, not by naming a depth per
+horizon:
+
+```
+top[0] = datum + relief        top[k+1] = top[k] + thickness[k](x, y)
+```
+
+That one choice is what makes a pinchout expressible. A thickness may vary
+across the map and reach zero, but it is never negative — so the horizons
+below a pinching unit rise to meet it and no horizon can ever cross
+another. `build_geology` refuses a crossing horizon (it is not a structure,
+it is a mistake), and naming a depth per horizon makes one very easy to
+create by accident: tilt one surface and leave its neighbours flat and you
+have driven it straight through them.
+
+A unit pinches out directionally with `{"shape": "wedge", "azimuth": 270,
+"start": 0.35, "end": 0.65}` — full thickness, then thinning to nothing
+between those fractions of the model along that bearing — or radially with
+`{"shape": "lens", "radius": [700, 500]}`.
+
+![A stratigraphic trap built with layer_cake](docs/figures/pinchout-wedge.png)
+
+`examples/configs/pinchout_wedge.yaml` is a **stratigraphic** trap rather
+than a structural one: the sand thins to zero at x = 1,075 m and everything
+updip of that is shale. No spill point, no contact — the rock simply stops.
+The producer sits in 30 m of sand near the edge, the injector in the full
+90 m downdip, and the perforations follow the thickness because completions
+resolve against the built model rather than against a nominal depth.
+
+`structure` deforms the whole package together — `{"style": "dipping",
+"dip": 6}`, `{"style": "anticline", "amplitude": 90}` — for the same reason:
+one horizon deformed alone is a crossing horizon.
+
 ## Reservoir flow
 
 Two-phase IMPES on the reservoir cells: pressure implicit, saturation
@@ -637,8 +684,9 @@ Interfaces are designed for these; the physics is not there yet, and the
   volume balance closed rather than implying it closed.
 - Marine streamer, OBC and land geometries; SEG-Y and RESQML I/O; the GPU
   backend.
-- Geology is built from parametric templates, not drawn: dip, throw and fold
-  amplitude are configuration values rather than surfaces you drag.
+- Geology is built from parametric templates and layer tables, not drawn:
+  dip, throw, fold amplitude and unit thickness are values you set rather
+  than surfaces you drag.
 - Scenario comparison shows which settings differ and what would have to be
   rerun; it does not yet put two sets of results side by side.
 

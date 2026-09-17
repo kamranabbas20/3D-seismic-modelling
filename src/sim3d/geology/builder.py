@@ -154,11 +154,16 @@ def build_geology(grid: Grid3D, layers: list[Layer], faults: FaultSet | None = N
         tops.append(surface[:, :, None])
     for i in range(1, len(tops)):
         if np.any(tops[i] < tops[i - 1] - 1e-9):
+            gap = float(np.max(tops[i - 1] - tops[i]))
             raise ValidationError(
-                f"layer {layers[i].name!r} has a top above layer "
-                f"{layers[i - 1].name!r}; horizons must be ordered downwards "
-                f"(a truncation or pinchout needs an explicit unconformity, "
-                f"not a crossing horizon)"
+                f"layer {layers[i].name!r} has a top up to {gap:,.0f} m above "
+                f"layer {layers[i - 1].name!r}; horizons must be ordered "
+                f"downwards, and a crossing one is not a structure.\n"
+                f"To thin a unit out, give it a thickness that reaches zero "
+                f"rather than a horizon that dives through its neighbour: the "
+                f"`layer_cake` template's `pinch_out` does this, as do the "
+                f"`Wedge` and `Lens` thickness surfaces. To cut one package "
+                f"against another, clamp the lower surface with `Truncated`."
             )
 
     layer_index = np.zeros(grid.shape, dtype=np.int16)

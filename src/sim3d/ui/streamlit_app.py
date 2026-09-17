@@ -46,6 +46,7 @@ from sim3d.fourd.noise import NoiseModel
 from sim3d.geology.bodies import BODY_TYPES, GeoBody
 from sim3d.wave.wavelets import DEFAULT_ORMSBY_CORNERS, WAVELETS
 from sim3d.geology.facies import FACIES
+from sim3d.geology.templates import DEFAULT_UNITS, TEMPLATES, template
 from sim3d.rockphysics.dryframe import DRY_FRAME_MODELS
 from sim3d.core.graph import explain as explain_dependencies
 from sim3d.core.units import PSI, pa_to_psi, psi_to_pa, si_to_stb_per_day
@@ -343,6 +344,8 @@ def page_geology() -> None:
     st.title("Geology")
     st.caption(geology.summary().splitlines()[1])
 
+    _structure_editor(pipe)
+
     volumes = {
         "porosity": (geology.porosity, "porosity", 1.0, "fraction"),
         "shale volume": (geology.vsh, "vsh", 1.0, "fraction"),
@@ -376,6 +379,316 @@ def page_geology() -> None:
                   "stress.")
 
     _geobody_editor(pipe, geology)
+
+
+#: Columns of the layer-cake editor, in the order they are shown.
+_UNIT_COLUMNS = ("name", "facies", "thickness", "reservoir", "pinch out",
+                 "azimuth", "from", "to", "porosity", "Vsh", "NTG")
+
+_STRUCTURES = ("flat", "dipping", "anticline", "syncline")
+
+
+def _units_to_rows(units: list[dict]) -> list[dict]:
+    """The configured units as editor rows, pinchouts flattened into columns."""
+    rows = []
+    for unit in units:
+        pinch = unit.get("pinch_out") or {}
+        shape = str(pinch.get("shape", "wedge")) if pinch else "none"
+        rows.append({
+            "name": str(unit.get("name", "")),
+            "facies": str(unit.get("facies", "shale")),
+            "thickness": float(unit.get("thickness", 100.0)),
+            "reservoir": bool(unit.get("is_reservoir", False)),
+            "pinch out": shape,
+            "azimuth": float(pinch.get("azimuth", 90.0)),
+            "from": float(pinch.get("start", pinch.get("radius", [0.3, 0.3])[0]
+                                    if shape == "lens" else 0.3)),
+            "to": float(pinch.get("end", pinch.get("radius", [0.3, 0.3])[1]
+                                  if shape == "lens" else 0.8)),
+            "porosity": unit.get("porosity"),
+            "Vsh": unit.get("vsh"),
+            "NTG": unit.get("ntg"),
+        })
+    return rows
+
+
+def _rows_to_units(rows, extent) -> list[dict]:
+    """Editor rows back into unit dictionaries, blanks left unset.
+
+    A blank property column means *take the facies default*, which is not the
+    same as zero - so an empty cell has to stay absent rather than become a
+    number nobody chose.
+    """
+    units: list[dict] = []
+    for row in rows:
+        name = str(row.get("name") or "").strip()
+        if not name:
+            continue                      # an empty row is a row being added
+        unit = {"name": name,
+                "facies": str(row.get("facies") or "shale"),
+                "thickness": float(row.get("thickness") or 0.0),
+                "is_reservoir": bool(row.get("reservoir"))}
+        for key, column in (("porosity", "porosity"), ("vsh", "Vsh"),
+                            ("ntg", "NTG")):
+            value = row.get(column)
+            if value is None or (isinstance(value, float) and np.isnan(value)):
+                continue
+            unit[key] = float(value)
+        shape = str(row.get("pinch out") or "none")
+        if shape != "none":
+            azimuth = float(row.get("azimuth", 90.0))
+            start = float(row.get("from", 0.3))
+            end = float(row.get("to", 0.8))
+            if shape == "lens":
+                unit["pinch_out"] = {
+                    "shape": "lens", "azimuth": azimuth,
+                    "radius": [start * extent[0], end * extent[1]]}
+            else:
+                unit["pinch_out"] = {"shape": "wedge", "azimuth": azimuth,
+                                     "start": start, "end": end}
+        units.append(unit)
+    return units
+
+
+def _template_parameters(name: str, current: dict, extent) -> dict:
+    """Number and checkbox inputs for whatever a template's signature declares.
+
+    Read off the signature rather than written out per template, so every
+    template's own parameters - dip, fold amplitude, gross thickness, the
+    number of stacked units - are editable the moment they exist, and a
+    template that gains one does not need this page changed.
+    """
+    import inspect
+
+    builder = TEMPLATES[name]
+    values = dict(current)
+    editable = [(key, param.default)
+                for key, param in inspect.signature(builder).parameters.items()
+                if key not in ("extent", "units", "structure")
+                and isinstance(param.default, (int, float, bool))]
+    if not editable:
+        st.caption("This template takes no numerical parameters.")
+        return values
+
+    columns = st.columns(min(len(editable), 4))
+    for index, (key, default) in enumerate(editable):
+        column = columns[index % len(columns)]
+        shown = values.get(key, default)
+        label = key.replace("_", " ").capitalize()
+        widget_key = f"tmpl_{name}_{key}"
+        if isinstance(default, bool):
+            values[key] = column.checkbox(label, value=bool(shown), key=widget_key)
+        elif isinstance(default, int):
+            values[key] = int(column.number_input(
+                label, 1, 60, int(shown), 1, key=widget_key))
+        else:
+            values[key] = float(column.number_input(
+                label, 0.0, 10000.0, float(shown),
+                1.0 if abs(float(default)) < 100 else 10.0, key=widget_key))
+    return values
+
+
+def _stratigraphy_warnings(layers, grid, frequency: float) -> list[str]:
+    """What is about to be unrepresentable, said before it is built.
+
+    Thicknesses are measured on what the *model* holds, not on what the table
+    asked for: a unit whose base falls past the bottom of the geological
+    domain is only as thick as the room left for it, and the last unit always
+    runs to the base whatever thickness it was given.
+    """
+    top_of_model = grid.origin[2]
+    base = top_of_model + grid.extent[2]
+    tops = [layer.top.on_grid(grid) for layer in layers]
+
+    notes = []
+    for index, layer in enumerate(layers):
+        upper = np.clip(tops[index], top_of_model, base)
+        lower = np.clip(tops[index + 1] if index + 1 < len(tops)
+                        else np.full_like(upper, base), top_of_model, base)
+        thickness = lower - upper
+        peak = float(np.max(thickness))
+        if peak <= 1e-6:
+            notes.append(
+                f"**{layer.name}** has no thickness inside the model and will "
+                f"not appear in it. Either the units above it fill the domain, "
+                f"or it pinches out everywhere.")
+            continue
+        if peak < 2 * grid.dz:
+            notes.append(
+                f"**{layer.name}** is at most {peak:,.0f} m thick against a "
+                f"{grid.dz:,.0f} m cell — fewer than two cells, so the grid "
+                f"does not carry it whatever the table says.")
+        if float(np.min(thickness)) <= 1e-6:
+            notes.append(f"**{layer.name}** pinches out inside the model.")
+
+    if tops and float(np.min(tops[0])) < top_of_model - 1e-6:
+        notes.append(
+            f"The first unit starts above the model at "
+            f"{float(np.min(tops[0])):,.0f} m. Raise the datum, or extend the "
+            f"geological domain upwards.")
+    deepest = float(np.max(tops[-1])) if tops else 0.0
+    if deepest > base + 1e-6:
+        notes.append(
+            f"The stack reaches {deepest:,.0f} m against a model base at "
+            f"{base:,.0f} m, so the deepest units are cut off. Thin the units "
+            f"above them, or deepen the geological domain.")
+    return notes
+
+
+def _describe_layers(name: str, parameters: dict) -> str:
+    """A canonical description of what a template and its parameters build.
+
+    Surfaces and layers are dataclasses all the way down, so their repr is a
+    faithful, comparable statement of the stratigraphy. A configuration that
+    fails to build compares equal to nothing, which is the right answer: a
+    broken current state is always a change worth applying away from.
+    """
+    try:
+        layers, faults = template(name, **parameters)
+    except Exception as exc:                      # noqa: BLE001 - reported, not raised
+        return f"unbuildable: {name}: {exc}"
+    return repr((name, layers, faults))
+
+
+def _structure_editor(pipe) -> None:
+    """Choose the structure and the stratigraphy without editing YAML.
+
+    Everything about the earth's shape - which template, how many units, how
+    thick, what dips, what pinches out - lived only in the configuration file
+    until now. The page could show you the model and let you retouch one
+    layer's petrophysics, but not change the model.
+    """
+    cfg = config()
+    grid = pipe.domains.geology
+    extent = grid.extent
+    with st.expander("Structure and stratigraphy", expanded=False):
+        names = list(TEMPLATES)
+        current = cfg.geology.template
+        chosen = st.selectbox(
+            "Template", names,
+            index=names.index(current) if current in names else 0,
+            key="geo_template",
+            help="`layer_cake` is the general one: as many units as you like, "
+                 "each with its own thickness and pinchout. The rest are "
+                 "ready-made structures with their own parameters.")
+        st.caption(f"Model extent {extent[0]:,.0f} × {extent[1]:,.0f} × "
+                   f"{extent[2]:,.0f} m on a {grid.dx:,.0f} × {grid.dy:,.0f} × "
+                   f"{grid.dz:,.0f} m cell, from the Domains settings.")
+
+        parameters = dict(cfg.geology.parameters or {})
+        if chosen != current:
+            parameters = {}          # a different template, not the old one's dials
+        parameters.setdefault("extent", [float(v) for v in extent])
+
+        if chosen == "layer_cake":
+            new_parameters = _layer_cake_controls(parameters, extent)
+        else:
+            new_parameters = _template_parameters(chosen, parameters, extent)
+            new_parameters["extent"] = [float(v) for v in extent]
+
+        try:
+            layers, faults = template(chosen, **new_parameters)
+        except Sim3DError as exc:
+            st.error(str(exc))
+            return
+        st.plotly_chart(
+            ui.stratigraphy_figure(layers, grid, axis=0,
+                                   title="Section through the model centre",
+                                   wells=pipe.wells()),
+            width="stretch")
+        for note in _stratigraphy_warnings(layers, grid,
+                                           cfg.source.frequency):
+            st.warning(note)
+
+        apply, revert = st.columns(2)
+        # "Would applying this change anything?" is a question about the
+        # stratigraphy, not about the parameter dictionary. The editor fills in
+        # defaults the configuration leaves out - an extent, a datum, a flat
+        # structure - so comparing dictionaries reports a change on every
+        # first render and the button is never honestly disabled.
+        changed = _describe_layers(chosen, new_parameters) != _describe_layers(
+            current, dict(cfg.geology.parameters or {}))
+        if apply.button("Apply stratigraphy", type="primary",
+                        disabled=not changed, key="geo_apply"):
+            cfg.geology.template = chosen
+            cfg.geology.parameters = new_parameters
+            invalidate()
+            st.rerun()
+        if revert.button("Discard changes", disabled=not changed,
+                         key="geo_revert"):
+            st.rerun()
+        if changed:
+            st.caption("The section above is the edit; the volumes below are "
+                       "still the applied model.")
+
+
+def _layer_cake_controls(parameters: dict, extent) -> dict:
+    """The units table and the one structure the whole package carries."""
+    a, b, c, d = st.columns(4)
+    structure = dict(parameters.get("structure") or {})
+    style = str(structure.get("style", "flat"))
+    style = a.selectbox("Structure", _STRUCTURES,
+                        index=_STRUCTURES.index(style) if style in _STRUCTURES else 0,
+                        key="cake_style")
+    datum = b.number_input("Datum (m)", 0.0, 10000.0,
+                           float(parameters.get("datum", 0.0)), 10.0,
+                           key="cake_datum",
+                           help="Depth of the top of the first unit.")
+    new_structure: dict = {"style": style}
+    if style == "dipping":
+        new_structure["dip"] = c.number_input(
+            "Dip (degrees)", 0.0, 80.0, float(structure.get("dip", 6.0)), 0.5,
+            key="cake_dip")
+        new_structure["azimuth"] = d.number_input(
+            "Dip azimuth", 0.0, 360.0, float(structure.get("azimuth", 90.0)),
+            5.0, key="cake_dip_az",
+            help="Degrees clockwise from +y; 90 dips towards +x.")
+    elif style in ("anticline", "syncline"):
+        new_structure["amplitude"] = c.number_input(
+            "Relief (m)", 0.0, 2000.0, float(structure.get("amplitude", 90.0)),
+            5.0, key="cake_amp")
+        new_structure["azimuth"] = d.number_input(
+            "Long-axis azimuth", 0.0, 360.0,
+            float(structure.get("azimuth", 0.0)), 5.0, key="cake_fold_az")
+
+    st.caption("One row per unit, top first. Add and delete rows in the table. "
+               "Blank porosity, Vsh or NTG take the facies default. "
+               "**pinch out** `wedge` thins the unit along **azimuth**, from "
+               "**from** to **to** as fractions of the model; `lens` tapers it "
+               "away from the centre with **from** and **to** as the two radii, "
+               "again as fractions.")
+    rows = _units_to_rows(list(parameters.get("units") or DEFAULT_UNITS))
+    edited = st.data_editor(
+        rows, num_rows="dynamic", width="stretch", key="cake_units",
+        column_order=_UNIT_COLUMNS,
+        column_config={
+            "name": st.column_config.TextColumn("name", required=True),
+            "facies": st.column_config.SelectboxColumn(
+                "facies", options=list(FACIES), required=True),
+            "thickness": st.column_config.NumberColumn(
+                "thickness (m)", min_value=0.0, max_value=5000.0, step=5.0),
+            "reservoir": st.column_config.CheckboxColumn("reservoir"),
+            "pinch out": st.column_config.SelectboxColumn(
+                "pinch out", options=["none", "wedge", "lens"]),
+            "azimuth": st.column_config.NumberColumn(
+                "azimuth", min_value=0.0, max_value=360.0, step=5.0),
+            "from": st.column_config.NumberColumn(
+                "from", min_value=0.0, max_value=1.0, step=0.05),
+            "to": st.column_config.NumberColumn(
+                "to", min_value=0.0, max_value=1.0, step=0.05),
+            "porosity": st.column_config.NumberColumn(
+                "porosity", min_value=0.0, max_value=0.6, step=0.01),
+            "Vsh": st.column_config.NumberColumn(
+                "Vsh", min_value=0.0, max_value=1.0, step=0.01),
+            "NTG": st.column_config.NumberColumn(
+                "NTG", min_value=0.0, max_value=1.0, step=0.01),
+        })
+    out = dict(parameters)
+    out["extent"] = [float(v) for v in extent]
+    out["datum"] = float(datum)
+    out["units"] = _rows_to_units(edited, extent)
+    out["structure"] = new_structure
+    return out
 
 
 def layer_overrides() -> list[dict]:

@@ -73,6 +73,25 @@ WELL_SYMBOL_2D = {"producer": "circle", "injector": "circle", "observation": "ci
 WELL_SYMBOL_3D = {"producer": "circle", "injector": "circle", "observation": "circle-open"}
 
 # --- status ---------------------------------------------------------------
+#: One colour per lithology, in the catalogue's own order and never cycled.
+#: Shales are the muted greys and browns, reservoir rock the saturated hues,
+#: so a stratigraphic column reads as reservoir-or-not before it is read as
+#: a legend.
+FACIES_COLOUR = {
+    "shale": "#8c8577",
+    "sandy_shale": "#b0a68f",
+    "shaly_sandstone": "#d9a441",
+    "clean_sandstone": "#eda100",
+    "carbonate": "#5598e7",
+    "coal": "#3d3a34",
+    "salt": "#d7d3c4",
+    "basement": "#6b5f7a",
+}
+#: What an unrecognised lithology is drawn in, rather than a colour that
+#: silently collides with a real one.
+FACIES_FALLBACK = "#c3c2b7"
+
+
 STATUS = {"PASS": "#0ca30c", "WARNING": "#fab219", "FAIL": "#d03b3b"}
 STATUS_ICON = {"PASS": "✓", "WARNING": "!", "FAIL": "✕"}
 

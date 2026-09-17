@@ -104,6 +104,90 @@ class Syncline(Anticline):
 
 
 @dataclass
+class Wedge(Surface):
+    """A *thickness* that ramps linearly to zero along a bearing.
+
+    Not a horizon but a term to add to one: ``top + Wedge(...)`` is the base
+    of a unit that thins out in the ``azimuth`` direction and is gone beyond
+    ``end``.  Because the thickness reaches zero and never goes negative, the
+    base touches the top rather than crossing it, which is exactly what a
+    pinchout is and what :func:`~sim3d.geology.builder.build_geology`
+    requires of ordered horizons.
+
+    ``start`` and ``end`` are distances in metres along the bearing from
+    ``origin``: full thickness at and before ``start``, zero at and beyond
+    ``end``.
+    """
+
+    thickness: float
+    azimuth: float = 90.0
+    start: float = 0.0
+    end: float = 1000.0
+    origin: tuple[float, float] = (0.0, 0.0)
+
+    def depth(self, x, y):
+        if self.thickness < 0:
+            raise ConfigError(f"a wedge thickness cannot be negative, got "
+                              f"{self.thickness}")
+        if self.end <= self.start:
+            raise ConfigError(
+                f"a wedge must thin over a positive distance, got start "
+                f"{self.start} and end {self.end}")
+        ux, uy = bearing_vector(self.azimuth)
+        along = (x - self.origin[0]) * ux + (y - self.origin[1]) * uy
+        taper = np.clip((along - self.start) / (self.end - self.start), 0.0, 1.0)
+        return self.thickness * (1.0 - taper)
+
+
+@dataclass
+class Lens(Surface):
+    """A *thickness* that tapers to zero away from a centre.
+
+    The radial counterpart of :class:`Wedge`: thickest at ``centre``, gone at
+    the edge of the ellipse set by ``radius`` and ``azimuth``.  Adding it to
+    a horizon gives a lens or a channel body that pinches out all round
+    rather than in one direction.
+    """
+
+    thickness: float
+    centre: tuple[float, float] = (1500.0, 1500.0)
+    radius: tuple[float, float] = (900.0, 500.0)
+    azimuth: float = 0.0
+    #: Fraction of the radius over which the thickness falls from full to
+    #: zero.  1.0 is a smooth taper from the centre; 0.2 is a flat-topped
+    #: body with steep edges.
+    taper: float = 1.0
+
+    def depth(self, x, y):
+        rx, ry = self.radius
+        if rx <= 0 or ry <= 0:
+            raise ConfigError(f"lens radii must be positive, got {self.radius}")
+        if not 0.0 < self.taper <= 1.0:
+            raise ConfigError(f"lens taper must lie in (0, 1], got {self.taper}")
+        u, v = to_principal(x - self.centre[0], y - self.centre[1], self.azimuth)
+        r = np.sqrt((u / rx) ** 2 + (v / ry) ** 2)
+        edge = np.clip((1.0 - r) / self.taper, 0.0, 1.0)
+        return self.thickness * edge
+
+
+@dataclass
+class Truncated(Surface):
+    """A surface clamped so it can touch the one above but never cross it.
+
+    The explicit unconformity the builder asks for when a structure would
+    otherwise drive one horizon through another.  Where ``surface`` would go
+    shallower than ``limit`` it is held at ``limit``, leaving zero thickness
+    there instead of a crossing horizon.
+    """
+
+    surface: Surface
+    limit: Surface
+
+    def depth(self, x, y):
+        return np.maximum(self.surface.depth(x, y), self.limit.depth(x, y))
+
+
+@dataclass
 class Composite(Surface):
     """The sum of several surfaces, taking the first one's ``z0`` as the base.
 

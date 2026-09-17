@@ -494,6 +494,67 @@ def bar_figure(centres, counts, *, xlabel: str, ylabel: str, width: float | None
     return fig
 
 
+def stratigraphy_figure(layers, grid, *, axis: int = 0, at: float | None = None,
+                        title: str = "", height: int = 420,
+                        wells=None) -> go.Figure:
+    """The layer stack as filled bands down one section line.
+
+    Evaluates the horizon surfaces directly rather than the built property
+    cube, so it costs milliseconds and can be drawn while the stratigraphy is
+    still being edited.  That is the point of it: seeing where a unit sits,
+    how thick it is and where it pinches out should not need a grid build.
+    """
+    import numpy as np
+
+    other = 1 - axis
+    along = grid.axis(axis)
+    fixed = grid.axis(other)
+    index = nearest(fixed, grid.origin[other] + 0.5 * grid.extent[other]
+                    if at is None else at)
+
+    tops = []
+    for layer in layers:
+        surface = layer.top.on_grid(grid)
+        tops.append(surface[:, index] if axis == 0 else surface[index, :])
+    base = grid.origin[2] + grid.extent[2]
+
+    fig = go.Figure()
+    for i, layer in enumerate(layers):
+        upper = tops[i]
+        lower = tops[i + 1] if i + 1 < len(tops) else np.full_like(upper, base)
+        colour = theme.FACIES_COLOUR.get(layer.facies, theme.FACIES_FALLBACK)
+        thickness = float(np.max(lower - upper))
+        pinches = bool(np.min(lower - upper) <= 1e-6) and thickness > 1e-6
+        fig.add_trace(go.Scatter(
+            x=np.concatenate([along, along[::-1]]),
+            y=np.concatenate([upper, lower[::-1]]),
+            fill="toself", mode="lines",
+            line=dict(color=theme.SURFACE, width=1.0),
+            fillcolor=colour, opacity=0.92,
+            name=layer.name + (" (pinches out)" if pinches else ""),
+            hovertemplate=(f"<b>{layer.name}</b><br>{layer.facies}"
+                           f"<br>thickness up to {thickness:,.0f} m"
+                           f"<extra></extra>")))
+    for well in (wells or []):
+        position = well.position
+        fig.add_trace(go.Scatter(
+            x=[position[axis]] * 2, y=[grid.origin[2], base], mode="lines",
+            line=dict(color=theme.INK_PRIMARY, width=1.6, dash="dot"),
+            name=well.name, showlegend=False,
+            hovertemplate=f"{well.name}<extra></extra>"))
+
+    label = ("x", "y")[axis]
+    fig.update_layout(**theme.plotly_layout(
+        title=dict(text=title, font=dict(size=14)), height=height,
+        xaxis_title=f"{label} (m)", yaxis_title="depth (m)",
+        xaxis=dict(range=[float(along.min()), float(along.max())],
+                   gridcolor=theme.GRIDLINE, linecolor=theme.AXIS),
+        yaxis=dict(autorange="reversed", gridcolor=theme.GRIDLINE,
+                   linecolor=theme.AXIS, tickfont=dict(color=theme.INK_MUTED)),
+        legend=dict(orientation="v", x=1.01, y=1.0, font=dict(size=10))))
+    return fig
+
+
 def section_figure(data: np.ndarray, x, y, *, xlabel: str, ylabel: str,
                    title: str = "", height: int = 420,
                    robust: bool = True) -> go.Figure:

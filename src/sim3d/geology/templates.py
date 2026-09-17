@@ -11,10 +11,13 @@ from __future__ import annotations
 from typing import Callable
 
 from ..core.errors import ConfigError
+from ..core.geometry import bearing_vector
 from .builder import Layer
 from .faults import Fault, FaultSet
 from .heterogeneity import HeterogeneitySpec
-from .surfaces import Anticline, Dipping, Flat, Relief, Syncline
+from .facies import get_facies
+from .surfaces import (Anticline, Composite, Dipping, Flat, Lens, Relief,
+                       Surface, Syncline, Wedge)
 
 
 def _overburden(z_reservoir: float) -> list[Layer]:
@@ -262,6 +265,181 @@ def three_layer(extent=(3000.0, 3000.0, 2200.0), z_reservoir=1200.0,
     ], FaultSet([])
 
 
+#: The heterogeneity a reservoir unit gets unless it asks for something else.
+def _heterogeneity(seed: int, offset: int = 0):
+    return HeterogeneitySpec(
+        std=0.030 if offset == 0 else 0.05,
+        correlation_major=650.0, correlation_minor=380.0,
+        correlation_vertical=18.0, azimuth=30.0, model="exponential",
+        seed=seed + offset)
+
+
+def _structure_relief(structure: dict | None, extent) -> Surface | None:
+    """The relief every horizon in a layer cake carries, or ``None`` for flat.
+
+    One structure for the whole package, deliberately.  Deforming a single
+    horizon and leaving its neighbours flat drives it through them, which is
+    a crossing horizon rather than a structure - the same mistake
+    :func:`dipping_reservoir` exists to avoid.
+    """
+    if not structure:
+        return None
+    spec = dict(structure)
+    style = str(spec.pop("style", "flat")).lower()
+    centre = tuple(spec.pop("centre", None) or (extent[0] / 2, extent[1] / 2))
+    if style == "flat":
+        return None
+    if style == "dipping":
+        return Relief(Dipping(0.0, dip=float(spec.pop("dip", 4.0)),
+                              azimuth=float(spec.pop("azimuth", 90.0)),
+                              origin=centre))
+    if style in ("anticline", "syncline"):
+        radius = tuple(spec.pop("radius", None)
+                       or (0.32 * extent[0], 0.45 * extent[1]))
+        fold = Anticline if style == "anticline" else Syncline
+        return Relief(fold(0.0, amplitude=float(spec.pop("amplitude", 90.0)),
+                           centre=centre, radius=radius,
+                           azimuth=float(spec.pop("azimuth", 0.0))))
+    raise ConfigError(
+        f"unknown structural style {style!r}; choose from flat, dipping, "
+        f"anticline, syncline")
+
+
+def _pinch_thickness(unit: dict, extent) -> Surface:
+    """One unit's thickness, constant or tapering to zero.
+
+    A pinchout is expressed as a thickness that reaches zero, never as a
+    horizon that crosses another: the base is the top plus this, so where
+    the thickness is zero the two touch and the unit is simply absent.
+    """
+    thickness = float(unit.get("thickness", 100.0))
+    if thickness <= 0:
+        raise ConfigError(
+            f"unit {unit.get('name', '?')!r} needs a positive thickness, got "
+            f"{thickness}; a unit that is absent everywhere should be removed "
+            f"rather than given zero thickness")
+    pinch = unit.get("pinch_out")
+    if not pinch:
+        return Flat(thickness)
+
+    spec = dict(pinch)
+    shape = str(spec.pop("shape", "wedge")).lower()
+    if shape == "wedge":
+        azimuth = float(spec.pop("azimuth", 90.0))
+        # `start` and `end` are fractions of how far the model reaches along
+        # that bearing, so they mean the same thing whichever way it points.
+        ux, uy = bearing_vector(azimuth)
+        corners = [cx * ux + cy * uy
+                   for cx in (0.0, extent[0]) for cy in (0.0, extent[1])]
+        lo, span = min(corners), max(corners) - min(corners)
+        start = float(spec.pop("start", 0.3))
+        end = float(spec.pop("end", 0.8))
+        if not 0.0 <= start < end <= 1.0:
+            raise ConfigError(
+                f"unit {unit.get('name', '?')!r}: a pinchout must run from "
+                f"`start` to a larger `end`, both within 0 to 1 as fractions "
+                f"of the model, got start {start} and end {end}")
+        return Wedge(thickness, azimuth=azimuth, start=lo + start * span,
+                     end=lo + end * span, origin=(0.0, 0.0))
+    if shape == "lens":
+        centre = tuple(spec.pop("centre", None)
+                       or (extent[0] / 2, extent[1] / 2))
+        radius = tuple(spec.pop("radius", None)
+                       or (0.30 * extent[0], 0.30 * extent[1]))
+        return Lens(thickness, centre=centre, radius=radius,
+                    azimuth=float(spec.pop("azimuth", 0.0)),
+                    taper=float(spec.pop("taper", 1.0)))
+    raise ConfigError(
+        f"unknown pinchout shape {shape!r}; choose from wedge, lens")
+
+
+#: What a layer cake looks like when nothing is asked for.
+DEFAULT_UNITS: list[dict] = [
+    {"name": "overburden", "facies": "shale", "thickness": 900.0},
+    {"name": "seal", "facies": "shale", "thickness": 60.0, "porosity": 0.12},
+    {"name": "reservoir", "facies": "clean_sandstone", "thickness": 120.0,
+     "is_reservoir": True},
+    {"name": "underburden", "facies": "sandy_shale", "thickness": 400.0},
+]
+
+
+def layer_cake(extent=(3000.0, 3000.0, 2200.0), datum=0.0, units=None,
+               structure=None, seed=1):
+    """Template J: as many units as you like, stacked by thickness.
+
+    The general case the other templates are special cases of.  Each entry in
+    ``units`` is a dictionary with a ``name``, a ``facies`` and a
+    ``thickness``, plus anything a
+    :class:`~sim3d.geology.builder.Layer` accepts - ``porosity``, ``vsh``,
+    ``ntg``, ``permeability``, ``is_reservoir``, ``n_sublayers`` - and an
+    optional ``pinch_out``.
+
+    Horizons are built by *accumulating thickness* rather than by naming
+    depths:
+
+        top[0] = datum + relief,    top[k+1] = top[k] + thickness[k](x, y)
+
+    That is what makes pinchouts work.  A thickness may vary across the map
+    and reach zero, but it is never negative, so the horizons below a
+    pinching unit rise to meet it and no horizon can ever cross another -
+    which is the condition :func:`~sim3d.geology.builder.build_geology`
+    enforces and which naming depths per horizon makes very easy to break.
+
+    ``structure`` deforms the whole package together - ``{"style":
+    "dipping", "dip": 8}``, ``{"style": "anticline", "amplitude": 90}`` - and
+    ``pinch_out`` thins one unit out, either directionally
+    (``{"shape": "wedge", "azimuth": 90, "start": 0.3, "end": 0.8}``, as
+    fractions of the model) or radially
+    (``{"shape": "lens", "radius": [900, 500]}``).
+
+    The last unit has no base: like every other template here, it extends to
+    the bottom of the model.
+    """
+    units = [dict(u) for u in (units if units is not None else DEFAULT_UNITS)]
+    if not units:
+        raise ConfigError("a layer cake needs at least one unit")
+    names = [u.get("name") or f"unit_{i + 1}" for i, u in enumerate(units)]
+    if len(set(names)) != len(names):
+        duplicated = sorted({n for n in names if names.count(n) > 1})
+        raise ConfigError(
+            f"layer names must be unique; repeated: {', '.join(duplicated)}")
+
+    relief = _structure_relief(structure, extent)
+    parts: list[Surface] = [Flat(float(datum))]
+    if relief is not None:
+        parts.append(relief)
+
+    layers: list[Layer] = []
+    for index, (unit, name) in enumerate(zip(units, names)):
+        top = Composite(list(parts))
+        facies_name = unit.get("facies", "shale")
+        explicit = unit.get("is_reservoir")
+        is_reservoir = (get_facies(facies_name).is_reservoir if explicit is None
+                        else bool(explicit))
+        # A reservoir is heterogeneous unless told otherwise; an overburden
+        # unit is not, because heterogeneity there costs time and changes
+        # nothing anyone is asking about.
+        heterogeneous = bool(unit.get("heterogeneous", is_reservoir))
+        sublayers = int(unit.get("n_sublayers", 4 if heterogeneous else 1))
+        layer = Layer(
+            name, top, facies_name,
+            porosity=unit.get("porosity"), vsh=unit.get("vsh"),
+            ntg=unit.get("ntg"), permeability=unit.get("permeability"),
+            n_sublayers=max(sublayers, 1),
+            sublayer_porosity_range=float(
+                unit.get("sublayer_porosity_range",
+                         0.035 if heterogeneous else 0.0)),
+            is_reservoir=explicit if explicit is None else bool(explicit),
+        )
+        if heterogeneous:
+            layer.porosity_heterogeneity = _heterogeneity(seed + 10 * index, 0)
+            layer.vsh_heterogeneity = _heterogeneity(seed + 10 * index, 1)
+        layers.append(layer)
+        parts.append(_pinch_thickness(unit, extent))
+
+    return layers, FaultSet([])
+
+
 #: Template name -> builder.
 TEMPLATES: dict[str, Callable] = {
     "flat": flat_reservoir,
@@ -273,6 +451,7 @@ TEMPLATES: dict[str, Callable] = {
     "stacked_sands": stacked_sands,
     "three_layer": three_layer,
     "five_layer": five_layer,
+    "layer_cake": layer_cake,
 }
 
 
