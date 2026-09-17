@@ -342,6 +342,35 @@ resolve against the built model rather than against a nominal depth.
 "dip": 6}`, `{"style": "anticline", "amplitude": 90}` — for the same reason:
 one horizon deformed alone is a crossing horizon.
 
+### Drawing it
+
+Three things are drawn by clicking rather than typed:
+
+| what | where | what it changes |
+|---|---|---|
+| wells | map view | position, and the completions that resolve against the built model |
+| geobodies — channels, lenses | map view | porosity, permeability, NTG and the reservoir mask, so a channel drawn here moves the flood and the 4D |
+| **horizons** | **section view** | one unit's thickness along the section |
+
+Drawing a horizon works by **drawing the base and storing the thickness**.
+You click where you want the base of a unit to sit, which is the intuitive
+thing to draw; what is stored is how thick that makes the unit, measured
+from its own top and clamped at zero. Click above the top and you have drawn
+a pinchout, not an impossible model.
+
+That indirection is the whole point. Storing the drawn depths would let a
+later structural edit push two horizons through each other, and
+`build_geology` would refuse the result. Storing thicknesses cannot: they are
+non-negative, so the tops that accumulate from them touch but never cross. A
+fuzz test draws 25 random profiles — including ones far above the unit's own
+top — onto a 12° dip and checks every horizon pair stays ordered.
+
+The thickness is taken along the section and held constant across the other
+direction. One section says nothing about the rest of the model, so nothing
+is invented for it.
+
+![Drawing a horizon](docs/figures/drawn-horizon.png)
+
 ## Reservoir flow
 
 Two-phase IMPES on the reservoir cells: pressure implicit, saturation

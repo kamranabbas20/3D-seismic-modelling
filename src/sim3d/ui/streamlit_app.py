@@ -47,6 +47,8 @@ from sim3d.geology.bodies import BODY_TYPES, GeoBody
 from sim3d.wave.wavelets import DEFAULT_ORMSBY_CORNERS, WAVELETS
 from sim3d.geology.facies import FACIES
 from sim3d.geology.templates import DEFAULT_UNITS, TEMPLATES, template
+from sim3d.geology.picking import (picks_to_profile, profile_is_empty,
+                                   profile_to_picks)
 from sim3d.rockphysics.dryframe import DRY_FRAME_MODELS
 from sim3d.core.graph import explain as explain_dependencies
 from sim3d.core.units import PSI, pa_to_psi, psi_to_pa, si_to_stb_per_day
@@ -535,6 +537,87 @@ def _stratigraphy_warnings(layers, grid, frequency: float) -> list[str]:
     return notes
 
 
+def _horizon_editor(pipe, parameters: dict, layers) -> tuple[dict, dict]:
+    """Draw one unit's base on a section.
+
+    Returns the parameters with the drawing injected for the preview, and
+    what the preview needs to show it. Nothing is committed here: the
+    drawing is one more edit alongside the table, and the single
+    "Apply stratigraphy" button below commits the lot.
+    """
+    grid = pipe.domains.geology
+    units = list(parameters.get("units") or [])
+    names = [unit.get("name", f"unit_{i + 1}") for i, unit in enumerate(units)]
+    if not names:
+        return parameters, {}
+
+    st.markdown("**Draw a horizon**")
+    drawing = st.toggle(
+        "Draw on the section", key="draw_horizon",
+        help="Click the section to say where the base of a unit should sit. "
+             "What is stored is the thickness that implies, measured from "
+             "the unit's own top and clamped at zero — so a base drawn above "
+             "that top is a pinchout rather than a model that cannot exist.")
+    if not drawing:
+        st.session_state.pop("horizon_picks", None)
+        return parameters, {}
+
+    a, b = st.columns([2, 1])
+    unit_name = a.selectbox("Unit", names, key="horizon_unit")
+    axis = 0 if b.radio("Along", ("x", "y"), horizontal=True,
+                        key="horizon_axis") == "x" else 1
+    index = names.index(unit_name)
+
+    # Switching unit or axis starts a fresh drawing, seeded from whatever
+    # that unit already carries so an existing profile can be adjusted
+    # rather than only replaced.
+    token = (unit_name, axis)
+    if st.session_state.get("horizon_token") != token:
+        st.session_state.horizon_token = token
+        stored = units[index].get("thickness_profile")
+        st.session_state.horizon_picks = (
+            profile_to_picks(stored, layers, index, grid) if stored else [])
+    picks = st.session_state.setdefault("horizon_picks", [])
+
+    st.caption(f"Clicking snaps to the geological grid. **{unit_name}** is "
+               f"outlined below; everything else is faded. The thickness is "
+               f"taken along {'x' if axis == 0 else 'y'} and is constant "
+               f"across the other direction — one section says nothing about "
+               f"the rest of the model, so nothing is invented for it.")
+
+    trial = dict(parameters)
+    preview = {"highlight": unit_name, "picks": picks, "placement": True,
+               "axis": axis}
+    if picks:
+        profile = picks_to_profile(picks, layers, index, grid, axis)
+        if not profile_is_empty(profile):
+            trial_units = [dict(u) for u in units]
+            trial_units[index] = {**trial_units[index],
+                                  "thickness_profile": profile}
+            trial_units[index].pop("pinch_out", None)
+            trial = {**parameters, "units": trial_units}
+        else:
+            st.warning("Every pick is at or above the unit's own top, so it "
+                       "would be absent everywhere. Draw at least one point "
+                       "below the top.")
+
+    undo, clear, drop = st.columns(3)
+    if undo.button("Undo last pick", disabled=not picks, key="horizon_undo"):
+        picks.pop()
+        st.rerun()
+    if clear.button("Clear drawing", disabled=not picks, key="horizon_clear"):
+        st.session_state.horizon_picks = []
+        st.rerun()
+    if drop.button("Remove drawn profile",
+                   disabled="thickness_profile" not in units[index],
+                   key="horizon_drop"):
+        stripped = [dict(u) for u in units]
+        stripped[index].pop("thickness_profile", None)
+        st.session_state.horizon_picks = []
+        return {**parameters, "units": stripped}, {}
+    return trial, preview
+
+
 def _describe_layers(name: str, parameters: dict) -> str:
     """A canonical description of what a template and its parameters build.
 
@@ -591,11 +674,37 @@ def _structure_editor(pipe) -> None:
         except Sim3DError as exc:
             st.error(str(exc))
             return
-        st.plotly_chart(
-            ui.stratigraphy_figure(layers, grid, axis=0,
-                                   title="Section through the model centre",
-                                   wells=pipe.wells()),
-            width="stretch")
+
+        # The drawing needs the tops of the units *above* the one being
+        # drawn, which do not depend on its own thickness - so the layers
+        # built a moment ago are the right ones to convert picks against,
+        # and the stack is rebuilt afterwards to show the result.
+        preview: dict = {}
+        if chosen == "layer_cake":
+            new_parameters, preview = _horizon_editor(pipe, new_parameters, layers)
+            try:
+                layers, faults = template(chosen, **new_parameters)
+            except Sim3DError as exc:
+                st.error(str(exc))
+                return
+
+        drawing = bool(preview.get("placement"))
+        figure = ui.stratigraphy_figure(
+            layers, grid, axis=int(preview.get("axis", 0)),
+            title="Section through the model centre", wells=pipe.wells(),
+            highlight=preview.get("highlight"), picks=preview.get("picks"),
+            placement=drawing)
+        event = st.plotly_chart(
+            figure, width="stretch", key="strat_section",
+            on_select="rerun" if drawing else "ignore",
+            selection_mode="points")
+        if drawing and event and event.get("selection", {}).get("points"):
+            point = event["selection"]["points"][-1]
+            clicked = [float(point["x"]), float(point["y"])]
+            picks = st.session_state.setdefault("horizon_picks", [])
+            if not picks or clicked != picks[-1]:
+                picks.append(clicked)
+                st.rerun()
         for note in _stratigraphy_warnings(layers, grid,
                                            cfg.source.frequency):
             st.warning(note)
@@ -612,6 +721,10 @@ def _structure_editor(pipe) -> None:
                         disabled=not changed, key="geo_apply"):
             cfg.geology.template = chosen
             cfg.geology.parameters = new_parameters
+            # The drawing is in the configuration now, so the live picks are
+            # spent; leaving them would re-apply them over the next edit.
+            for key in ("horizon_picks", "horizon_token"):
+                st.session_state.pop(key, None)
             invalidate()
             st.rerun()
         if revert.button("Discard changes", disabled=not changed,

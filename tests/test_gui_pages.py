@@ -506,3 +506,35 @@ def test_the_geology_page_still_has_no_execution_button():
     assert labels, "no buttons found at all, so this check proves nothing"
     assert not [label for label in labels
                 if any(word in label.lower() for word in ("run", "migrate"))]
+
+
+def test_a_horizon_can_be_drawn_on_the_section():
+    """Wells and geobodies were click-placed on a map; horizons were not
+    drawable at all. This is the section-view equivalent."""
+    app = _goto(_app(), "Geology")
+    _widget(app, "selectbox", "geo_template").set_value("layer_cake")
+    app.run()
+    toggle = _widget(app, "toggle", "draw_horizon")
+    assert not toggle.value, "drawing must be off until it is asked for"
+    toggle.set_value(True)
+    app.run()
+    assert not app.exception
+    # The unit being drawn and the axis it is drawn along are both choices.
+    assert _widget(app, "selectbox", "horizon_unit").options
+    assert _widget(app, "radio", "horizon_axis").options == ["x", "y"]
+    # Nothing to undo before anything is drawn.
+    assert _widget(app, "button", "horizon_undo").disabled
+    assert _widget(app, "button", "horizon_clear").disabled
+
+
+def test_drawing_stays_off_and_leaves_no_picks_behind():
+    app = _goto(_app(), "Geology")
+    _widget(app, "selectbox", "geo_template").set_value("layer_cake")
+    app.run()
+    assert "horizon_picks" not in app.session_state
+    _widget(app, "toggle", "draw_horizon").set_value(True)
+    app.run()
+    _widget(app, "toggle", "draw_horizon").set_value(False)
+    app.run()
+    assert "horizon_picks" not in app.session_state
+    assert not app.exception

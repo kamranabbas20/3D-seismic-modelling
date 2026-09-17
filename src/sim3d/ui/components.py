@@ -495,8 +495,9 @@ def bar_figure(centres, counts, *, xlabel: str, ylabel: str, width: float | None
 
 
 def stratigraphy_figure(layers, grid, *, axis: int = 0, at: float | None = None,
-                        title: str = "", height: int = 420,
-                        wells=None) -> go.Figure:
+                        title: str = "", height: int = 420, wells=None,
+                        highlight: str | None = None, picks=None,
+                        placement: bool = False) -> go.Figure:
     """The layer stack as filled bands down one section line.
 
     Evaluates the horizon surfaces directly rather than the built property
@@ -525,12 +526,15 @@ def stratigraphy_figure(layers, grid, *, axis: int = 0, at: float | None = None,
         colour = theme.FACIES_COLOUR.get(layer.facies, theme.FACIES_FALLBACK)
         thickness = float(np.max(lower - upper))
         pinches = bool(np.min(lower - upper) <= 1e-6) and thickness > 1e-6
+        chosen = highlight is not None and layer.name == highlight
         fig.add_trace(go.Scatter(
             x=np.concatenate([along, along[::-1]]),
             y=np.concatenate([upper, lower[::-1]]),
             fill="toself", mode="lines",
-            line=dict(color=theme.SURFACE, width=1.0),
-            fillcolor=colour, opacity=0.92,
+            line=dict(color=theme.INK_PRIMARY if chosen else theme.SURFACE,
+                      width=2.2 if chosen else 1.0),
+            fillcolor=colour,
+            opacity=0.95 if chosen else (0.35 if highlight else 0.92),
             name=layer.name + (" (pinches out)" if pinches else ""),
             hovertemplate=(f"<b>{layer.name}</b><br>{layer.facies}"
                            f"<br>thickness up to {thickness:,.0f} m"
@@ -542,6 +546,29 @@ def stratigraphy_figure(layers, grid, *, axis: int = 0, at: float | None = None,
             line=dict(color=theme.INK_PRIMARY, width=1.6, dash="dot"),
             name=well.name, showlegend=False,
             hovertemplate=f"{well.name}<extra></extra>"))
+
+    if picks:
+        fig.add_trace(go.Scatter(
+            x=[float(p[0]) for p in picks], y=[float(p[1]) for p in picks],
+            mode="lines+markers", name="drawn base",
+            line=dict(color=theme.INK_PRIMARY, width=2.0, dash="dash"),
+            marker=dict(size=10, color=theme.SURFACE,
+                        line=dict(color=theme.INK_PRIMARY, width=2)),
+            hovertemplate="pick %{x:,.0f} m, %{y:,.0f} m<extra></extra>"))
+    if placement:
+        # Plotly reports selections on traces, not on empty canvas, so a
+        # transparent lattice is what makes the section clickable at all.
+        step_along = max(1, len(along) // 70)
+        depths = grid.axis(2)
+        step_depth = max(1, len(depths) // 70)
+        mesh_x, mesh_z = np.meshgrid(along[::step_along], depths[::step_depth],
+                                     indexing="ij")
+        fig.add_trace(go.Scatter(
+            x=mesh_x.ravel(), y=mesh_z.ravel(), mode="markers",
+            marker=dict(size=13, color="rgba(0,0,0,0)"), showlegend=False,
+            name="draw here",
+            hovertemplate=("draw the base here<br>%{x:,.0f} m, %{y:,.0f} m"
+                           "<extra></extra>")))
 
     label = ("x", "y")[axis]
     fig.update_layout(**theme.plotly_layout(

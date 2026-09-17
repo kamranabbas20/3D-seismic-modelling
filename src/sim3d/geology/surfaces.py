@@ -171,6 +171,47 @@ class Lens(Surface):
 
 
 @dataclass
+class PickedThickness(Surface):
+    """A *thickness* interpolated between picked points along one axis.
+
+    What a drawn horizon becomes.  The user clicks where they want the base
+    of a unit to sit on a section; the depth they clicked is turned into a
+    thickness relative to the unit's own top and stored here, clamped at
+    zero.  Storing the thickness rather than the depth is what makes a drawn
+    stratigraphy safe: thicknesses are non-negative, so the horizons that
+    accumulate from them can touch but never cross, however the picks fall.
+
+    ``points`` are ``(position, thickness)`` pairs in metres, ``position``
+    measured along ``axis`` (0 for x, 1 for y).  Between picks the thickness
+    is linear; beyond the outermost picks it is held flat, so a section
+    drawn across part of the model does not imply anything about the rest of
+    it beyond continuing as it ended.
+
+    The thickness varies only along ``axis``.  That is the honest reading of
+    a pick made on one section: nothing was said about the other direction,
+    so nothing is invented for it.
+    """
+
+    points: list[tuple[float, float]] = field(default_factory=list)
+    axis: int = 0
+
+    def depth(self, x, y):
+        if not self.points:
+            raise ConfigError(
+                "a picked thickness needs at least one point; draw one on the "
+                "section or give the unit a constant thickness instead")
+        if self.axis not in (0, 1):
+            raise ConfigError(f"axis must be 0 (x) or 1 (y), got {self.axis}")
+        ordered = sorted((float(a), float(b)) for a, b in self.points)
+        positions = np.array([a for a, _ in ordered], dtype=float)
+        # Clamped here rather than trusted: a pick above the unit's own top
+        # is a thickness of zero - a pinchout - not a negative thickness.
+        values = np.clip([b for _, b in ordered], 0.0, None)
+        along = x if self.axis == 0 else y
+        return np.interp(np.asarray(along, dtype=float), positions, values)
+
+
+@dataclass
 class Truncated(Surface):
     """A surface clamped so it can touch the one above but never cross it.
 

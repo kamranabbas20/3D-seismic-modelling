@@ -16,8 +16,8 @@ from .builder import Layer
 from .faults import Fault, FaultSet
 from .heterogeneity import HeterogeneitySpec
 from .facies import get_facies
-from .surfaces import (Anticline, Composite, Dipping, Flat, Lens, Relief,
-                       Surface, Syncline, Wedge)
+from .surfaces import (Anticline, Composite, Dipping, Flat, Lens,
+                       PickedThickness, Relief, Surface, Syncline, Wedge)
 
 
 def _overburden(z_reservoir: float) -> list[Layer]:
@@ -312,6 +312,24 @@ def _pinch_thickness(unit: dict, extent) -> Surface:
     horizon that crosses another: the base is the top plus this, so where
     the thickness is zero the two touch and the unit is simply absent.
     """
+    # A drawn profile says everything about the thickness, so it wins over
+    # both the constant and the parametric pinchout rather than combining
+    # with either - two sources for one number is how they disagree.
+    profile = unit.get("thickness_profile")
+    if profile:
+        points = profile.get("points") or []
+        if len(points) < 1:
+            raise ConfigError(
+                f"unit {unit.get('name', '?')!r} has a drawn thickness with no "
+                f"points; draw at least one or remove the profile")
+        if max(float(t) for _, t in points) <= 0.0:
+            raise ConfigError(
+                f"unit {unit.get('name', '?')!r} was drawn with no thickness "
+                f"anywhere; a unit that is absent everywhere should be removed "
+                f"rather than drawn flat against its own top")
+        return PickedThickness(points=[(float(a), float(b)) for a, b in points],
+                               axis=int(profile.get("axis", 0)))
+
     thickness = float(unit.get("thickness", 100.0))
     if thickness <= 0:
         raise ConfigError(
@@ -391,6 +409,12 @@ def layer_cake(extent=(3000.0, 3000.0, 2200.0), datum=0.0, units=None,
     (``{"shape": "wedge", "azimuth": 90, "start": 0.3, "end": 0.8}``, as
     fractions of the model) or radially
     (``{"shape": "lens", "radius": [900, 500]}``).
+
+    ``thickness_profile`` is the drawn alternative:
+    ``{"axis": 0, "points": [[500, 90], [2000, 0]]}`` interpolates the
+    thickness between picked positions, which is what the Geology page
+    writes when a horizon is drawn on a section.  It replaces ``thickness``
+    and ``pinch_out`` for that unit rather than combining with them.
 
     The last unit has no base: like every other template here, it extends to
     the bottom of the model.

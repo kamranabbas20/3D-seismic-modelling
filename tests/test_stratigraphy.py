@@ -6,6 +6,8 @@ thickness that reaches zero rather than as a horizon that dives through the
 one above it.
 """
 
+import pathlib
+
 import numpy as np
 import pytest
 
@@ -310,3 +312,146 @@ def test_a_stack_deeper_than_the_model_is_reported_not_silently_cut():
     notes = " ".join(_stratigraphy_warnings(layers, grid(), 20.0))
     assert "cut off" in notes
     assert "**c** has no thickness inside the model" in notes
+
+
+# ------------------------------------------------------- drawn stratigraphy
+def test_picked_thickness_interpolates_and_holds_flat_outside_the_picks():
+    from sim3d.geology.surfaces import PickedThickness
+
+    x, y = np.meshgrid(np.linspace(0.0, 3000.0, 31), np.linspace(0.0, 2000.0, 3),
+                       indexing="ij")
+    picked = PickedThickness(points=[(500.0, 90.0), (1500.0, 40.0),
+                                     (2000.0, 0.0)])
+    t = picked.depth(x, y)[:, 0]
+    assert t[0] == pytest.approx(90.0)          # flat before the first pick
+    assert t[5] == pytest.approx(90.0)          # x = 500, the pick itself
+    assert t[10] == pytest.approx(65.0)         # x = 1000, halfway
+    assert t[20] == pytest.approx(0.0)          # x = 2000
+    assert t[-1] == pytest.approx(0.0)          # flat after the last pick
+    # Picks in any order, and the same answer.
+    shuffled = PickedThickness(points=[(2000.0, 0.0), (500.0, 90.0),
+                                       (1500.0, 40.0)])
+    assert np.allclose(shuffled.depth(x, y), picked.depth(x, y))
+
+
+def test_a_pick_above_the_top_becomes_zero_not_a_negative_thickness():
+    """The clamp the whole design rests on.
+
+    A base drawn above its own top is a pinchout. Stored as a depth it would
+    be a crossing horizon and the model would be refused; stored as a
+    thickness it is simply zero.
+    """
+    from sim3d.geology.surfaces import PickedThickness
+
+    x, y = np.meshgrid(np.linspace(0.0, 1000.0, 11), np.linspace(0.0, 100.0, 2),
+                       indexing="ij")
+    t = PickedThickness(points=[(0.0, -80.0), (1000.0, 40.0)]).depth(x, y)
+    assert t.min() == pytest.approx(0.0)
+    assert np.all(t >= 0.0)
+
+
+def test_drawn_profiles_cannot_produce_a_crossing_horizon():
+    """Whatever is drawn, and wherever - this is the point of the feature."""
+    rng = np.random.default_rng(7)
+    for _ in range(25):
+        points = sorted((float(p), float(t)) for p, t in
+                        zip(rng.uniform(0, 3000, 5), rng.uniform(-200, 300, 5)))
+        if max(t for _, t in points) <= 0:
+            continue                       # refused on its own terms, below
+        units = [
+            {"name": "over", "facies": "shale", "thickness": 700.0},
+            {"name": "drawn", "facies": "clean_sandstone", "is_reservoir": True,
+             "thickness_profile": {"axis": 0, "points": [list(p) for p in points]}},
+            {"name": "under", "facies": "shale", "thickness": 400.0},
+        ]
+        layers, _ = layer_cake(extent=EXTENT, units=units,
+                               structure={"style": "dipping", "dip": 12.0})
+        model = build_geology(grid(), layers)     # raises on a crossing
+        tops = [model.horizons[n.name] for n in model.layers]
+        for upper, lower in zip(tops, tops[1:]):
+            assert np.all(lower >= upper - 1e-9)
+
+
+def test_a_drawn_profile_replaces_the_constant_and_the_pinchout():
+    """Two sources for one number is how they come to disagree."""
+    units = [{"name": "over", "facies": "shale", "thickness": 900.0},
+             {"name": "drawn", "facies": "clean_sandstone", "is_reservoir": True,
+              "thickness": 500.0,
+              "pinch_out": {"shape": "wedge", "start": 0.1, "end": 0.2},
+              "thickness_profile": {"axis": 0,
+                                    "points": [[0.0, 60.0], [3000.0, 60.0]]}},
+             {"name": "under", "facies": "shale", "thickness": 400.0}]
+    model = build_geology(grid(), layer_cake(extent=EXTENT, units=units)[0])
+    thickness = thicknesses(model, "drawn")
+    assert thickness.min() == pytest.approx(60.0)
+    assert thickness.max() == pytest.approx(60.0)
+
+
+def test_a_drawing_with_no_thickness_anywhere_is_refused():
+    for profile in ({"axis": 0, "points": []},
+                    {"axis": 0, "points": [[0.0, 0.0], [3000.0, 0.0]]}):
+        with pytest.raises(ConfigError):
+            layer_cake(extent=EXTENT, units=[
+                {"name": "a", "facies": "shale", "thickness": 900.0},
+                {"name": "gone", "facies": "clean_sandstone",
+                 "thickness_profile": profile}])
+
+
+def test_picks_become_a_thickness_measured_from_the_units_own_top():
+    from sim3d.geology.picking import picks_to_profile, profile_to_picks
+
+    units = [{"name": "over", "facies": "shale", "thickness": 900.0},
+             {"name": "target", "facies": "clean_sandstone", "thickness": 100.0,
+              "is_reservoir": True},
+             {"name": "under", "facies": "shale", "thickness": 400.0}]
+    layers, _ = layer_cake(extent=EXTENT, units=units)
+    g = grid()
+
+    # The target's top is flat at 900 m, so a base drawn at 1,000 m is 100 m
+    # thick and one drawn at 850 m - above its own top - is zero.
+    profile = picks_to_profile([[200.0, 1000.0], [2800.0, 850.0]],
+                                layers, 1, g, axis=0)
+    assert profile["points"][0] == pytest.approx([200.0, 100.0])
+    assert profile["points"][1] == pytest.approx([2800.0, 0.0])
+
+    # And back again, so an existing drawing can be picked up and adjusted.
+    picks = profile_to_picks(profile, layers, 1, g)
+    assert picks[0] == pytest.approx([200.0, 1000.0])
+    assert picks[1] == pytest.approx([2800.0, 900.0])
+
+
+def test_the_pick_conversion_lives_in_the_engine_not_the_interface():
+    """Spec section 119: Streamlit is a frontend.
+
+    Converting a click into a stratigraphy is geometry - testable without a
+    browser, and wrong to hide in a page. It was in the app module until the
+    architectural guard in test_ui caught it.
+    """
+    import sim3d.geology.picking as picking
+
+    assert picking.picks_to_profile and picking.profile_to_picks
+    source = pathlib.Path("src/sim3d/ui/streamlit_app.py").read_text()
+    assert "def picks_to_profile" not in source
+    assert "def _picks_to_profile" not in source
+
+
+def test_picks_are_measured_against_a_dipping_top_not_a_flat_one():
+    """The conversion has to follow the structure, or a drawn base on a dip
+    comes out as a wedge nobody drew."""
+    from sim3d.geology.picking import picks_to_profile
+
+    units = [{"name": "over", "facies": "shale", "thickness": 900.0},
+             {"name": "target", "facies": "clean_sandstone", "thickness": 100.0,
+              "is_reservoir": True},
+             {"name": "under", "facies": "shale", "thickness": 400.0}]
+    layers, _ = layer_cake(extent=EXTENT, units=units,
+                           structure={"style": "dipping", "dip": 10.0})
+    g = grid()
+    top = layers[1].top.on_grid(g)[:, g.shape[1] // 2]
+    along = g.axis(0)
+    # Draw a base exactly 80 m below the top at two very different places.
+    picks = [[float(along[10]), float(top[10] + 80.0)],
+             [float(along[50]), float(top[50] + 80.0)]]
+    profile = picks_to_profile(picks, layers, 1, g, axis=0)
+    assert [t for _, t in profile["points"]] == pytest.approx([80.0, 80.0],
+                                                              abs=1e-6)
