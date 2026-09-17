@@ -114,6 +114,11 @@ class GeologyConfig:
     #: porosity, permeability, net-to-gross and the reservoir mask, so they
     #: reach the flow simulation and the seismic, not just the display.
     bodies: list = field(default_factory=list)
+    #: Faults drawn or written directly, added to whatever the template
+    #: brings.  A fault displaces the stratigraphy and attenuates transport
+    #: across its plane, so it changes the flood, the compartments and the
+    #: seismic together.
+    faults: list = field(default_factory=list)
 
 
 @dataclass

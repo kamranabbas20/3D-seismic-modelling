@@ -538,3 +538,37 @@ def test_drawing_stays_off_and_leaves_no_picks_behind():
     app.run()
     assert "horizon_picks" not in app.session_state
     assert not app.exception
+
+
+def test_a_fault_can_be_drawn_on_the_map():
+    """Faults reached the model only through `fault_compartment`, which makes
+    exactly one, at the model centre, with a fixed strike."""
+    app = _goto(_app(), "Geology")
+    toggle = _widget(app, "toggle", "drawing_fault")
+    assert not toggle.value, "drawing must be off until it is asked for"
+    toggle.set_value(True)
+    app.run()
+    assert not app.exception
+    for key in ("fault_depth", "fault_dip", "fault_throw", "fault_zone"):
+        assert _widget(app, "number_input", key) is not None
+    assert _widget(app, "slider", "fault_trans").value == 0.0
+    # Nothing to place or clear before a trace is drawn.
+    assert _widget(app, "button", "fault_place").disabled
+    assert _widget(app, "button", "fault_clear").disabled
+
+
+def test_placing_a_fault_needs_two_clicks_and_reaches_the_configuration():
+    app = _goto(_app(), "Geology")
+    _widget(app, "toggle", "drawing_fault").set_value(True)
+    app.run()
+    app.session_state["fault_path"] = [[600.0, 400.0], [2400.0, 2600.0]]
+    app.run()
+    place = _widget(app, "button", "fault_place")
+    assert not place.disabled, "two points is a trace"
+    place.click()
+    app.run()
+    assert not app.exception
+    faults = app.session_state["config"].geology.faults
+    assert len(faults) == 1
+    assert faults[0]["trace"] == [[600.0, 400.0], [2400.0, 2600.0]]
+    assert app.session_state["fault_path"] == [], "the trace is spent"

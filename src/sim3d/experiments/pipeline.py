@@ -44,6 +44,7 @@ from ..geology.bodies import apply_bodies, build_bodies
 from ..geology.builder import (
     GeologyModel, build_geology, override_layers,
 )
+from ..geology.faults import FaultSet, build_faults
 from ..geology.templates import template
 from ..imaging.rtm import RTMSettings, RTMResult, migrate_survey
 from ..processing.filters import direct_wave_mute, offset_mute
@@ -190,6 +191,13 @@ class Pipeline:
         if self.result.geology is None:
             cfg = self.config.geology
             layers, faults = template(cfg.template, **cfg.parameters)
+            # Configured faults are added to the template's rather than
+            # replacing them: a template that ships a fault is making a
+            # structural statement, and dropping it silently because another
+            # fault was drawn would change the trap without saying so.
+            drawn = build_faults(cfg.faults)
+            if drawn:
+                faults = FaultSet([*faults, *drawn])
             override_layers(layers, cfg.layers)
             bodies = build_bodies(cfg.bodies)
             self.result.geology = self._timed(
@@ -198,6 +206,7 @@ class Pipeline:
             self.result.notes.append(
                 f"geology: template '{cfg.template}' with {len(layers)} layers, "
                 f"{len(faults)} fault(s)")
+            self.result.notes += [f"fault: {f.describe()}" for f in drawn]
             self.result.notes += [
                 f"layer override: {e['name']} — "
                 + ", ".join(f"{k}={v}" for k, v in e.items() if k != "name")

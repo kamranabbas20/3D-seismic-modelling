@@ -144,6 +144,81 @@ class Fault:
                 f"{self.dip:g} deg, throw {abs(self.throw):g} m, {seal}")
 
 
+def fault_from_trace(name: str, trace, depth: float, *, dip: float = 65.0,
+                     throw: float = 30.0, dip_extent: float | None = None,
+                     zone_width: float = 20.0,
+                     transmissibility: float = 1.0) -> Fault:
+    """A fault from the two ends of its map trace.
+
+    What a drawn fault becomes.  The trace fixes three of the plane's
+    parameters at once and leaves no room for them to disagree: the origin
+    is its midpoint at ``depth``, the strike is its bearing, and the
+    ``strike_extent`` is half its length, so the fault is exactly as long as
+    the line drawn for it.
+
+    The trace is directed, and deliberately so.  A fault dips down towards
+    ``strike + 90`` - ninety degrees clockwise from the direction drawn - so
+    drawing the same line the other way round gives the opposite dip
+    direction and the opposite hanging wall.  Normalising the strike into
+    ``[0, 180)`` would quietly discard that choice.
+    """
+    points = [(float(x), float(y)) for x, y in trace]
+    if len(points) < 2:
+        raise ConfigError(
+            f"fault {name!r} needs two ends to its trace, got {len(points)}")
+    (x0, y0), (x1, y1) = points[0], points[-1]
+    dx, dy = x1 - x0, y1 - y0
+    length = float(np.hypot(dx, dy))
+    if length <= 0.0:
+        raise ConfigError(
+            f"fault {name!r} has a trace of zero length; its two ends are the "
+            f"same point")
+    return Fault(
+        name=name,
+        origin=(0.5 * (x0 + x1), 0.5 * (y0 + y1), float(depth)),
+        # strike_vector is (sin, cos), so this is the bearing of the trace
+        # measured clockwise from +y, which is what `strike` means.
+        strike=float(np.degrees(np.arctan2(dx, dy))),
+        dip=float(dip), throw=float(throw),
+        strike_extent=0.5 * length,
+        dip_extent=None if dip_extent is None else float(dip_extent),
+        zone_width=float(zone_width),
+        transmissibility=float(transmissibility),
+    )
+
+
+def build_faults(specs) -> list[Fault]:
+    """Faults from plain dictionaries, drawn or written by hand.
+
+    A spec carrying a ``trace`` is resolved through :func:`fault_from_trace`;
+    one carrying ``origin`` and ``strike`` is taken as it stands.  Naming
+    both is refused rather than silently resolved, because the two would
+    then have to agree and nothing would be checking.
+    """
+    faults = []
+    for index, spec in enumerate(specs or []):
+        entry = dict(spec)
+        name = str(entry.pop("name", f"F{index + 1}"))
+        trace = entry.pop("trace", None)
+        if trace is not None:
+            if {"origin", "strike", "strike_extent"} & set(entry):
+                raise ConfigError(
+                    f"fault {name!r} gives both a trace and an explicit "
+                    f"origin, strike or strike_extent; the trace already sets "
+                    f"all three, so name one or the other")
+            depth = entry.pop("depth", None)
+            if depth is None:
+                raise ConfigError(
+                    f"fault {name!r} has a trace but no depth for its centre")
+            faults.append(fault_from_trace(name, trace, depth, **entry))
+            continue
+        entry.pop("depth", None)
+        if "origin" in entry:
+            entry["origin"] = tuple(float(v) for v in entry["origin"])
+        faults.append(Fault(name=name, **entry))
+    return faults
+
+
 @dataclass
 class FaultSet:
     """Several faults acting together."""

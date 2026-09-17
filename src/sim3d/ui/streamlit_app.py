@@ -47,6 +47,7 @@ from sim3d.geology.bodies import BODY_TYPES, GeoBody
 from sim3d.wave.wavelets import DEFAULT_ORMSBY_CORNERS, WAVELETS
 from sim3d.geology.facies import FACIES
 from sim3d.geology.templates import DEFAULT_UNITS, TEMPLATES, template
+from sim3d.geology.faults import build_faults
 from sim3d.geology.picking import (picks_to_profile, profile_is_empty,
                                    profile_to_picks)
 from sim3d.rockphysics.dryframe import DRY_FRAME_MODELS
@@ -380,6 +381,7 @@ def page_geology() -> None:
                   "attenuate transport across the plane. They do not solve for "
                   "stress.")
 
+    _fault_editor(pipe, geology)
     _geobody_editor(pipe, geology)
 
 
@@ -705,6 +707,11 @@ def _structure_editor(pipe) -> None:
             if not picks or clicked != picks[-1]:
                 picks.append(clicked)
                 st.rerun()
+        if len(faults):
+            st.caption(f"The section shows the stratigraphy before faulting. "
+                       f"{len(faults)} fault(s) displace it; the offset is in "
+                       f"the property volumes above, and the traces are on the "
+                       f"fault map below.")
         for note in _stratigraphy_warnings(layers, grid,
                                            cfg.source.frequency):
             st.warning(note)
@@ -887,6 +894,165 @@ def _layer_properties(geology) -> None:
 def body_specs() -> list[dict]:
     """The editable geobody list, straight off the configuration."""
     return config().geology.bodies
+
+
+def fault_specs() -> list[dict]:
+    """The editable fault list, straight off the configuration."""
+    return config().geology.faults
+
+
+def _fault_trace(fault, grid) -> tuple[list[float], list[float]]:
+    """The two ends of a fault's map trace, for drawing it."""
+    sx, sy, _ = fault.strike_vector
+    reach = fault.strike_extent
+    if reach is None:
+        # Unlimited along strike: long enough to leave the model either way.
+        reach = float(np.hypot(grid.extent[0], grid.extent[1]))
+    ox, oy, _ = fault.origin
+    return ([ox - reach * sx, ox + reach * sx],
+            [oy - reach * sy, oy + reach * sy])
+
+
+def _add_fault_layer(figure, faults, grid, path) -> None:
+    """Existing fault traces, and the one being drawn."""
+    import plotly.graph_objects as go
+
+    for fault in faults:
+        xs, ys = _fault_trace(fault, grid)
+        figure.add_trace(go.Scatter(
+            x=xs, y=ys, mode="lines", name=fault.name,
+            line=dict(color=theme.INK_PRIMARY, width=2.4),
+            hovertemplate=f"{fault.describe()}<extra></extra>"))
+    if path:
+        figure.add_trace(go.Scatter(
+            x=[p[0] for p in path], y=[p[1] for p in path],
+            mode="lines+markers", name="new fault",
+            line=dict(color=theme.SERIES[1], width=2.6, dash="dash"),
+            marker=dict(size=11, color=theme.SURFACE,
+                        line=dict(color=theme.SERIES[1], width=2)),
+            hovertemplate="%{x:,.0f} m, %{y:,.0f} m<extra></extra>"))
+
+
+def _fault_editor(pipe, geology) -> None:
+    """Draw a fault trace on the map and give it a plane.
+
+    Faults reached the model only through the `fault_compartment` template,
+    which makes exactly one, at the model centre, with a fixed strike. Any
+    other fault meant editing the template's source. Drawn here they are
+    added to whatever the template brings rather than replacing it.
+
+    A fault is not decoration: it displaces the stratigraphy and attenuates
+    transport across its plane, so it moves the flood front, splits the
+    pressure response into compartments and offsets the reflectors together.
+    """
+    grid = geology.grid
+    specs = fault_specs()
+    drawing = st.toggle("Draw a fault", key="drawing_fault",
+                        help="Click two points on the map for the ends of the "
+                             "fault trace.")
+    path = st.session_state.setdefault("fault_path", [])
+
+    if drawing:
+        st.caption("The trace sets three things at once: the fault runs "
+                   "exactly as far as the line drawn for it, its strike is "
+                   "the line's bearing, and its centre is the line's midpoint "
+                   "at the depth below. **The fault dips down to the right of "
+                   "the direction you draw**, so drawing the line the other "
+                   "way round puts the hanging wall on the other side.")
+        figure = ui.map_figure(wells=pipe.wells(),
+                               grid=pipe.domains.propagation,
+                               pml_nodes=config().solver.pml_nodes,
+                               bounds=grid.bounds)
+        _add_fault_layer(figure, geology.faults, grid, path)
+        _add_placement_layer(figure, grid, enabled=True)
+        event = st.plotly_chart(figure, width="stretch", key="faultmap",
+                                on_select="rerun", selection_mode="points")
+        if event and event.get("selection", {}).get("points"):
+            point = event["selection"]["points"][-1]
+            clicked = [float(point["x"]), float(point["y"])]
+            if not path or clicked != path[-1]:
+                if len(path) >= 2:
+                    path.clear()         # a third click starts a new trace
+                path.append(clicked)
+                st.rerun()
+        st.info(f"{len(path)} of 2 points placed.", icon="🖱️")
+
+        (_, _), (_, _), (z0, z1) = grid.bounds
+        a, b, c = st.columns(3)
+        name = a.text_input("Name", _unique_fault_name(), key="fault_name")
+        depth = b.number_input(
+            "Centre depth (m)", float(z0), float(z1),
+            float(np.clip(_reservoir_top(geology), z0, z1)), 10.0,
+            key="fault_depth", help="Where the trace sits; the plane passes "
+                                    "through this depth at the drawn line.")
+        dip = c.number_input("Dip (degrees)", 1.0, 90.0, 65.0, 1.0,
+                             key="fault_dip")
+        d, e, f = st.columns(3)
+        throw = d.number_input(
+            "Throw (m)", -500.0, 500.0, 40.0, 5.0, key="fault_throw",
+            help="Positive drops the hanging wall — a normal fault. "
+                 "Negative is reverse.")
+        seal = e.slider(
+            "Transmissibility", 0.0, 1.0, 0.0, 0.05, key="fault_trans",
+            help="0 is sealing, 1 lets flow through untouched. This is what "
+                 "decides whether the fault stops the flood.")
+        zone = f.number_input(
+            "Zone width (m)", float(grid.dx), 500.0,
+            float(max(2 * grid.dx, 20.0)), 5.0, key="fault_zone",
+            help="The plane is smoothed over this width. A fault sharper "
+                 "than the grid gives stair steps, not resolution.")
+        limited = st.checkbox("Limit how far it cuts down dip",
+                              key="fault_limit_dip")
+        dip_extent = None
+        if limited:
+            dip_extent = st.number_input(
+                "Half-height down dip (m)", float(grid.dz),
+                float(z1 - z0), float(0.25 * (z1 - z0)), 10.0,
+                key="fault_dip_extent")
+
+        place, clear = st.columns(2)
+        if place.button("Place fault", type="primary", disabled=len(path) < 2,
+                        key="fault_place"):
+            if name in {spec.get("name") for spec in specs}:
+                st.error(f"There is already a fault called {name!r}.")
+            else:
+                entry = {"name": name, "trace": [list(p) for p in path],
+                         "depth": float(depth), "dip": float(dip),
+                         "throw": float(throw), "zone_width": float(zone),
+                         "transmissibility": float(seal)}
+                if dip_extent is not None:
+                    entry["dip_extent"] = float(dip_extent)
+                try:
+                    build_faults([entry])         # refuse it here, not later
+                except Sim3DError as exc:
+                    st.error(str(exc))
+                else:
+                    specs.append(entry)
+                    st.session_state.fault_path = []
+                    invalidate()
+                    st.rerun()
+        if clear.button("Clear trace", disabled=not path, key="fault_clear"):
+            st.session_state.fault_path = []
+            st.rerun()
+
+    if specs:
+        st.caption("Drawn faults — the template's own are listed above.")
+        for index, spec in enumerate(list(specs)):
+            row, button = st.columns([5, 1])
+            row.code(build_faults([spec])[0].describe(), language="text")
+            if button.button("Delete", key=f"fault_delete_{index}"):
+                specs.pop(index)
+                invalidate()
+                st.rerun()
+
+
+def _unique_fault_name() -> str:
+    """The first free ``F<n>`` against the drawn faults."""
+    taken = {spec.get("name") for spec in fault_specs()}
+    index = 1
+    while f"F{index}" in taken:
+        index += 1
+    return f"F{index}"
 
 
 def _geobody_editor(pipe, geology) -> None:
