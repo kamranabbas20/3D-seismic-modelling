@@ -386,6 +386,37 @@ stays in the rock, so the well only ever produces what is still dissolved,
 and the curve runs backwards. That is the number to look at when deciding
 whether this model or a black-oil one is the right instrument.
 
+### What the seismic sees
+
+`sim3d sim2seis` turns all four earth states into angle stacks in seconds.
+
+![sim2seis baseline, monitor and 4D difference](docs/figures/wedge-sim2seis.png)
+
+Flattened on the reservoir top, because a 40° section otherwise spends nine
+tenths of its area on rock nothing happens in. Baseline and monitor share a
+scale; the difference needs one about six times finer. The 4D is confined to
+the updip half — strong from the crest to the gas front at x = 450 m, a
+band of opposite polarity where the injected water has swept, and
+essentially nothing downdip of the original contact at x = 560 m.
+
+![Angle behaviour and impedance change](docs/figures/wedge-sim2seis-avo.png)
+
+Both independent physics checks pass. The saturation response **rises**
+with angle (22.4 → 28.1 % NRMS near to far) and the pressure response
+**falls** (10.7 → 7.7 %), which is the AVO discrimination between them on
+the same earth with only the driver changed. And the two saturation effects
+have cleanly opposite sign in impedance — gas softens the rock by 5.9 %,
+injected water stiffens it by 6.6 %, with no overlap between the two
+populations. Their field means very nearly cancel, which is why the
+reservoir-wide mean 4D amplitude is 7e-5 against an RMS of 3.4e-2: on this
+model a bulk average would report almost no change while a third of the
+reservoir had gassed out.
+
+The interaction term is 13.3 % and flat with angle, against a 27.7 %
+combined response. That is large, and expected: Gassmann is strongly
+nonlinear in gas saturation, so liberating gas at reduced pressure is not
+the sum of liberating it and reducing the pressure.
+
 Two things worth knowing about how that run was set up. The shipped
 `dipping_wedge_4d.yaml` carries the library-default GOR of 100 m³/m³, whose
 bubble point at 85 °C is 3,070 psi — against a reservoir spanning 2,427 to
