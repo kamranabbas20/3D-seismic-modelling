@@ -125,6 +125,36 @@ alternative — naming a depth per horizon and deforming them independently —
 can produce a crossing from any structural edit, which is why `structure`
 applies to the whole package.
 
+### Drawn stratigraphy
+
+A drawn horizon is stored as a thickness, not as a depth. The editor
+converts a clicked base depth against the unit's own top **on that section**
+and clamps it at zero, so what the user draws is a base and what the model
+carries is a thickness — and the ordering invariant holds for any set of
+picks whatsoever. `PickedThickness` interpolates between knee points along
+one axis, held flat beyond the outermost pick.
+
+`SectionThickness` is the general form: a layer shaped on several sections,
+interpolated in two separable steps — along each section between its own
+knee points, then across the model between the sections — with the nearest
+section held flat outside the outermost ones. Every thickness stays
+non-negative through both steps, so the invariant survives whatever is
+drawn. One section degenerates to `PickedThickness` exactly.
+
+The conversion is section-aware, and has to be. With any dip across the
+sections, converting every pick against the model's middle instead of its
+own section turns two bases drawn 70 m below their tops into −70 m and
++210 m.
+
+### Drawn faults
+
+`fault_from_trace` fixes three of the plane's parameters from the two ends
+of its map trace: the origin is the midpoint at the given depth, the strike
+is the trace's bearing, and `strike_extent` is half its length. The trace is
+directed — a fault dips down towards `strike + 90` — so the strike is not
+normalised into `[0, 180)`, because that would discard which side the
+hanging wall is on.
+
 ### Validation
 
 | Check | Result |
@@ -135,6 +165,18 @@ applies to the whole package.
 | Unit thickness against what was asked for | exact to 1e-9 |
 | Fold relief over the crest against `amplitude` | within 5 % |
 | Reservoir flag, facies default vs. explicit override | both honoured |
+| Picked thickness, interpolation and flat extrapolation | exact |
+| A pick above its own top | clamped to zero, never negative |
+| 25 random drawn profiles on a 12° dip | no crossing horizon |
+| Pick → thickness → pick round trip, on a dipping top | exact to 1e-6 |
+| Interpolation between sections, and flat outside them | exact |
+| One section vs. `PickedThickness` | identical |
+| An edit on one section against a distant one | unmoved |
+| Model thickness against three drawn profiles | 0.000 m |
+| Fault strike from a drawn trace, four bearings | exact |
+| Throw recovered from the built model | 70.0 m against 70 asked for |
+| Reversing the trace | hanging wall swaps, dip stays downward |
+| Sealing fault, transport multiplier on and off the plane | < 0.05 / 1.0 |
 
 ## Reservoir flow
 

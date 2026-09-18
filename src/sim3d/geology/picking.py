@@ -28,8 +28,15 @@ import numpy as np
 from ..core.errors import ConfigError
 
 
-def _section_top(layers, index: int, grid, axis: int) -> tuple[np.ndarray, np.ndarray]:
-    """One unit's top along a section through the middle of the model."""
+def _section_top(layers, index: int, grid, axis: int,
+                 at: float | None = None) -> tuple[np.ndarray, np.ndarray]:
+    """One unit's top along a section, by default through the model's middle.
+
+    ``at`` is the position on the *other* axis, and it matters as soon as the
+    package dips: the same drawn depth means a different thickness on two
+    different sections, so converting both against the middle would put in a
+    wedge nobody drew.
+    """
     if axis not in (0, 1):
         raise ConfigError(f"axis must be 0 (x) or 1 (y), got {axis}")
     if not 0 <= index < len(layers):
@@ -37,11 +44,48 @@ def _section_top(layers, index: int, grid, axis: int) -> tuple[np.ndarray, np.nd
             f"there is no unit {index} in a stack of {len(layers)}")
     other = 1 - axis
     fixed = grid.axis(other)
-    middle = grid.origin[other] + 0.5 * grid.extent[other]
-    column = int(np.argmin(np.abs(fixed - middle)))
+    if at is None:
+        at = grid.origin[other] + 0.5 * grid.extent[other]
+    column = int(np.argmin(np.abs(fixed - float(at))))
     surface = layers[index].top.on_grid(grid)
     top = surface[:, column] if axis == 0 else surface[column, :]
     return grid.axis(axis), top
+
+
+def picks_to_section(picks, layers, index: int, grid, axis: int,
+                     at: float) -> dict:
+    """One section's knee points, from clicked depths on that same section."""
+    along, top = _section_top(layers, index, grid, axis, at)
+    points = []
+    for position, depth in sorted((float(a), float(b)) for a, b in picks):
+        here = float(np.interp(position, along, top))
+        points.append([position, max(float(depth) - here, 0.0)])
+    return {"at": float(at), "points": points}
+
+
+def section_to_picks(section: dict, layers, index: int, grid,
+                     axis: int = 0) -> list:
+    """One section's knee points back into clicked depths on that section."""
+    along, top = _section_top(layers, index, grid, axis, section.get("at"))
+    return [[float(position),
+             float(np.interp(float(position), along, top)) + float(thickness)]
+            for position, thickness in (section.get("points") or [])]
+
+
+def profile_sections(profile: dict) -> list:
+    """Every section of a profile, whichever form it was written in.
+
+    A one-section profile and a many-section one are the same thing with and
+    without a name for where the section sits, so a caller that only wants to
+    iterate should not have to know which it was handed.
+    """
+    if not profile:
+        return []
+    if profile.get("sections"):
+        return [dict(section) for section in profile["sections"]]
+    if profile.get("points"):
+        return [{"at": None, "points": [list(p) for p in profile["points"]]}]
+    return []
 
 
 def picks_to_profile(picks, layers, index: int, grid, axis: int = 0) -> dict:

@@ -48,8 +48,8 @@ from sim3d.wave.wavelets import DEFAULT_ORMSBY_CORNERS, WAVELETS
 from sim3d.geology.facies import FACIES
 from sim3d.geology.templates import DEFAULT_UNITS, TEMPLATES, template
 from sim3d.geology.faults import build_faults
-from sim3d.geology.picking import (picks_to_profile, profile_is_empty,
-                                   profile_to_picks)
+from sim3d.geology.picking import (picks_to_section, profile_sections,
+                                   section_to_picks)
 from sim3d.rockphysics.dryframe import DRY_FRAME_MODELS
 from sim3d.core.graph import explain as explain_dependencies
 from sim3d.core.units import PSI, pa_to_psi, psi_to_pa, si_to_stb_per_day
@@ -347,7 +347,7 @@ def page_geology() -> None:
     st.title("Geology")
     st.caption(geology.summary().splitlines()[1])
 
-    _structure_editor(pipe)
+    _structure_editor(pipe, geology)
 
     volumes = {
         "porosity": (geology.porosity, "porosity", 1.0, "fraction"),
@@ -381,7 +381,6 @@ def page_geology() -> None:
                   "attenuate transport across the plane. They do not solve for "
                   "stress.")
 
-    _fault_editor(pipe, geology)
     _geobody_editor(pipe, geology)
 
 
@@ -539,87 +538,6 @@ def _stratigraphy_warnings(layers, grid, frequency: float) -> list[str]:
     return notes
 
 
-def _horizon_editor(pipe, parameters: dict, layers) -> tuple[dict, dict]:
-    """Draw one unit's base on a section.
-
-    Returns the parameters with the drawing injected for the preview, and
-    what the preview needs to show it. Nothing is committed here: the
-    drawing is one more edit alongside the table, and the single
-    "Apply stratigraphy" button below commits the lot.
-    """
-    grid = pipe.domains.geology
-    units = list(parameters.get("units") or [])
-    names = [unit.get("name", f"unit_{i + 1}") for i, unit in enumerate(units)]
-    if not names:
-        return parameters, {}
-
-    st.markdown("**Draw a horizon**")
-    drawing = st.toggle(
-        "Draw on the section", key="draw_horizon",
-        help="Click the section to say where the base of a unit should sit. "
-             "What is stored is the thickness that implies, measured from "
-             "the unit's own top and clamped at zero — so a base drawn above "
-             "that top is a pinchout rather than a model that cannot exist.")
-    if not drawing:
-        st.session_state.pop("horizon_picks", None)
-        return parameters, {}
-
-    a, b = st.columns([2, 1])
-    unit_name = a.selectbox("Unit", names, key="horizon_unit")
-    axis = 0 if b.radio("Along", ("x", "y"), horizontal=True,
-                        key="horizon_axis") == "x" else 1
-    index = names.index(unit_name)
-
-    # Switching unit or axis starts a fresh drawing, seeded from whatever
-    # that unit already carries so an existing profile can be adjusted
-    # rather than only replaced.
-    token = (unit_name, axis)
-    if st.session_state.get("horizon_token") != token:
-        st.session_state.horizon_token = token
-        stored = units[index].get("thickness_profile")
-        st.session_state.horizon_picks = (
-            profile_to_picks(stored, layers, index, grid) if stored else [])
-    picks = st.session_state.setdefault("horizon_picks", [])
-
-    st.caption(f"Clicking snaps to the geological grid. **{unit_name}** is "
-               f"outlined below; everything else is faded. The thickness is "
-               f"taken along {'x' if axis == 0 else 'y'} and is constant "
-               f"across the other direction — one section says nothing about "
-               f"the rest of the model, so nothing is invented for it.")
-
-    trial = dict(parameters)
-    preview = {"highlight": unit_name, "picks": picks, "placement": True,
-               "axis": axis}
-    if picks:
-        profile = picks_to_profile(picks, layers, index, grid, axis)
-        if not profile_is_empty(profile):
-            trial_units = [dict(u) for u in units]
-            trial_units[index] = {**trial_units[index],
-                                  "thickness_profile": profile}
-            trial_units[index].pop("pinch_out", None)
-            trial = {**parameters, "units": trial_units}
-        else:
-            st.warning("Every pick is at or above the unit's own top, so it "
-                       "would be absent everywhere. Draw at least one point "
-                       "below the top.")
-
-    undo, clear, drop = st.columns(3)
-    if undo.button("Undo last pick", disabled=not picks, key="horizon_undo"):
-        picks.pop()
-        st.rerun()
-    if clear.button("Clear drawing", disabled=not picks, key="horizon_clear"):
-        st.session_state.horizon_picks = []
-        st.rerun()
-    if drop.button("Remove drawn profile",
-                   disabled="thickness_profile" not in units[index],
-                   key="horizon_drop"):
-        stripped = [dict(u) for u in units]
-        stripped[index].pop("thickness_profile", None)
-        st.session_state.horizon_picks = []
-        return {**parameters, "units": stripped}, {}
-    return trial, preview
-
-
 def _describe_layers(name: str, parameters: dict) -> str:
     """A canonical description of what a template and its parameters build.
 
@@ -635,115 +553,275 @@ def _describe_layers(name: str, parameters: dict) -> str:
     return repr((name, layers, faults))
 
 
-def _structure_editor(pipe) -> None:
-    """Choose the structure and the stratigraphy without editing YAML.
+def _shape_editor(pipe, parameters: dict, layers) -> tuple[dict, dict]:
+    """Step 3: shape one unit with knee points, section by section.
 
-    Everything about the earth's shape - which template, how many units, how
-    thick, what dips, what pinches out - lived only in the configuration file
-    until now. The page could show you the model and let you retouch one
-    layer's petrophysics, but not change the model.
+    A unit's thickness is a set of knee points along a section, and a set of
+    sections across the model.  Between knee points it is linear, between
+    sections it is interpolated, and beyond either the nearest one is held
+    flat - a section says nothing about ground nobody drew on, so nothing is
+    invented for it.
+
+    Knee points can be clicked on the section or typed into the table; they
+    are the same numbers either way.  What is clicked is a *base depth* and
+    what is stored is the thickness that implies, measured from this unit's
+    own top **on this section** and clamped at zero, so the horizons that
+    accumulate from it can touch but never cross.
+    """
+    grid = pipe.domains.geology
+    units = list(parameters.get("units") or [])
+    names = [unit.get("name", f"unit_{i + 1}") for i, unit in enumerate(units)]
+    if not names:
+        st.info("Add a layer in step 1 first.")
+        return parameters, {}
+
+    a, b = st.columns([2, 1])
+    unit_name = a.selectbox("Layer to shape", names, key="shape_unit")
+    axis = 0 if b.radio("Sections run along", ("x", "y"), horizontal=True,
+                        key="shape_axis") == "x" else 1
+    index = names.index(unit_name)
+    other = 1 - axis
+    lo, hi = grid.bounds[other]
+
+    stored = units[index].get("thickness_profile") or {}
+    sections = profile_sections(stored)
+    if stored and int(stored.get("axis", 0)) != axis:
+        st.warning(f"**{unit_name}** is already shaped along "
+                   f"{'x' if stored.get('axis', 0) == 0 else 'y'}. Changing "
+                   f"the axis here replaces that shaping rather than adding "
+                   f"to it.")
+        sections = []
+    for section in sections:
+        if section.get("at") is None:
+            section["at"] = float(0.5 * (lo + hi))
+
+    positions = sorted(float(section["at"]) for section in sections)
+    c, d = st.columns([2, 1])
+    choice = c.selectbox(
+        "Section", [f"{p:,.0f} m" for p in positions] + ["+ new section"],
+        key="shape_section",
+        help=f"Position along {'y' if axis == 0 else 'x'}. Between sections "
+             f"the thickness is interpolated.")
+    if choice == "+ new section":
+        at = float(d.number_input(
+            f"New section at ({'y' if axis == 0 else 'x'}, m)",
+            float(lo), float(hi), float(0.5 * (lo + hi)), float(grid.spacing[other]),
+            key="shape_new_at"))
+    else:
+        at = float(choice.replace(",", "").replace(" m", ""))
+        d.metric("Sections", len(positions))
+
+    current = next((dict(sec) for sec in sections
+                    if abs(float(sec["at"]) - at) < 1e-6), {"at": at, "points": []})
+
+    # The clicks and the table are the same numbers, so they share one state.
+    token = (unit_name, axis, at)
+    if st.session_state.get("shape_token") != token:
+        st.session_state.shape_token = token
+        st.session_state.shape_picks = (
+            section_to_picks(current, layers, index, grid, axis)
+            if current["points"] else [])
+    picks = st.session_state.setdefault("shape_picks", [])
+
+    clicking = st.toggle(
+        "Add knee points by clicking the section", key="shape_clicking",
+        help="Off by default. The review section at the bottom of the page is "
+             "always on screen, so a click there would otherwise land on "
+             "whichever layer and section this step happens to have selected.")
+    st.caption(f"Type depths into the table below, or turn on clicking and "
+               f"place them on the section. Either way they are the same "
+               f"numbers. **{unit_name}** is outlined in the review section; "
+               f"everything else is faded.")
+    edited = st.data_editor(
+        [{"position (m)": float(px), "base depth (m)": float(pz)}
+         for px, pz in picks],
+        num_rows="dynamic", width="stretch", key="shape_table",
+        column_config={
+            "position (m)": st.column_config.NumberColumn(
+                f"{'x' if axis == 0 else 'y'} (m)", step=25.0),
+            "base depth (m)": st.column_config.NumberColumn(
+                "base depth (m)", step=5.0)})
+    typed = [[float(row["position (m)"]), float(row["base depth (m)"])]
+             for row in edited
+             if row.get("position (m)") is not None
+             and row.get("base depth (m)") is not None]
+    if typed != picks:
+        st.session_state.shape_picks = typed
+        picks = typed
+
+    trial = parameters
+    if picks:
+        section = picks_to_section(picks, layers, index, grid, axis, at)
+        merged = [sec for sec in sections
+                  if abs(float(sec["at"]) - at) >= 1e-6] + [section]
+        merged.sort(key=lambda sec: float(sec["at"]))
+        if max((t for sec in merged for _, t in sec["points"]), default=0.0) > 0.0:
+            trial_units = [dict(unit) for unit in units]
+            trial_units[index] = {**trial_units[index],
+                                  "thickness_profile": {"axis": axis,
+                                                        "sections": merged}}
+            trial_units[index].pop("pinch_out", None)
+            trial = {**parameters, "units": trial_units}
+        else:
+            st.warning("Every knee point is at or above this unit's own top, "
+                       "so it would be absent everywhere. Put at least one "
+                       "below the top.")
+
+    undo, clear, drop = st.columns(3)
+    if undo.button("Undo last point", disabled=not picks, key="shape_undo"):
+        st.session_state.shape_picks = picks[:-1]
+        st.rerun()
+    if clear.button("Clear this section", disabled=not picks, key="shape_clear"):
+        st.session_state.shape_picks = []
+        st.rerun()
+    if drop.button("Unshape this layer", disabled=not stored, key="shape_drop"):
+        stripped = [dict(unit) for unit in units]
+        stripped[index].pop("thickness_profile", None)
+        st.session_state.shape_picks = []
+        st.session_state.pop("shape_token", None)
+        return {**parameters, "units": stripped}, {}
+
+    if len(positions) > 1:
+        st.caption(f"Shaped on {len(positions)} sections at "
+                   + ", ".join(f"{p:,.0f} m" for p in positions)
+                   + ". Between them the thickness is interpolated; outside "
+                     "them the nearest section is held flat.")
+    return trial, {"highlight": unit_name, "picks": picks,
+                   "placement": bool(clicking), "axis": axis, "at": at}
+
+
+def _structure_editor(pipe, geology) -> None:
+    """Build the earth, in steps, without editing YAML.
+
+    Everything about the model's shape - which template, how many layers, how
+    thick, what dips, what pinches out, where the faults run - lived only in
+    the configuration file. The page could show you the model and let you
+    retouch one layer's petrophysics, but not change the model.
     """
     cfg = config()
     grid = pipe.domains.geology
     extent = grid.extent
-    with st.expander("Structure and stratigraphy", expanded=False):
-        names = list(TEMPLATES)
-        current = cfg.geology.template
-        chosen = st.selectbox(
-            "Template", names,
-            index=names.index(current) if current in names else 0,
-            key="geo_template",
-            help="`layer_cake` is the general one: as many units as you like, "
-                 "each with its own thickness and pinchout. The rest are "
-                 "ready-made structures with their own parameters.")
-        st.caption(f"Model extent {extent[0]:,.0f} × {extent[1]:,.0f} × "
-                   f"{extent[2]:,.0f} m on a {grid.dx:,.0f} × {grid.dy:,.0f} × "
-                   f"{grid.dz:,.0f} m cell, from the Domains settings.")
+    st.subheader("Build the model")
+    names = list(TEMPLATES)
+    current = cfg.geology.template
+    chosen = st.selectbox(
+        "Starting point", names,
+        index=names.index(current) if current in names else 0,
+        key="geo_template",
+        help="`layer_cake` is the general one: as many layers as you like, "
+             "each with its own thickness, shape and pinchout. The rest are "
+             "ready-made structures with their own parameters.")
+    st.caption(f"Model extent {extent[0]:,.0f} × {extent[1]:,.0f} × "
+               f"{extent[2]:,.0f} m on a {grid.dx:,.0f} × {grid.dy:,.0f} × "
+               f"{grid.dz:,.0f} m cell, from the Domains settings.")
 
-        parameters = dict(cfg.geology.parameters or {})
-        if chosen != current:
-            parameters = {}          # a different template, not the old one's dials
-        parameters.setdefault("extent", [float(v) for v in extent])
+    parameters = dict(cfg.geology.parameters or {})
+    if chosen != current:
+        parameters = {}          # a different template, not the old one's dials
+    parameters.setdefault("extent", [float(v) for v in extent])
+    cake = chosen == "layer_cake"
 
-        if chosen == "layer_cake":
-            new_parameters = _layer_cake_controls(parameters, extent)
+    steps = st.tabs(["1 · Layers", "2 · Structure", "3 · Shape",
+                     "4 · Faults"])
+    with steps[0]:
+        if cake:
+            parameters = _layer_table(parameters, extent)
         else:
-            new_parameters = _template_parameters(chosen, parameters, extent)
-            new_parameters["extent"] = [float(v) for v in extent]
+            parameters = _template_parameters(chosen, parameters, extent)
+            parameters["extent"] = [float(v) for v in extent]
+            st.caption("This is a ready-made structure. Switch to "
+                       "`layer_cake` above to set the layers yourself.")
+    with steps[1]:
+        if cake:
+            parameters = _structure_controls(parameters)
+        else:
+            st.caption("The structure is part of this template — its own "
+                       "parameters are in step 1.")
 
-        try:
-            layers, faults = template(chosen, **new_parameters)
-        except Sim3DError as exc:
-            st.error(str(exc))
-            return
+    try:
+        layers, faults = template(chosen, **parameters)
+    except Sim3DError as exc:
+        st.error(str(exc))
+        return
 
-        # The drawing needs the tops of the units *above* the one being
-        # drawn, which do not depend on its own thickness - so the layers
-        # built a moment ago are the right ones to convert picks against,
-        # and the stack is rebuilt afterwards to show the result.
-        preview: dict = {}
-        if chosen == "layer_cake":
-            new_parameters, preview = _horizon_editor(pipe, new_parameters, layers)
+    preview: dict = {}
+    with steps[2]:
+        if cake:
+            # The shaping needs the tops of the layers ABOVE the one being
+            # shaped, which do not depend on its own thickness - so the stack
+            # built a moment ago is what the knee points convert against, and
+            # it is rebuilt afterwards to show the result.
+            parameters, preview = _shape_editor(pipe, parameters, layers)
             try:
-                layers, faults = template(chosen, **new_parameters)
+                layers, faults = template(chosen, **parameters)
             except Sim3DError as exc:
                 st.error(str(exc))
                 return
+        else:
+            st.info("Shaping a layer with knee points needs `layer_cake`.")
+    with steps[3]:
+        _fault_editor(pipe, geology)
 
-        drawing = bool(preview.get("placement"))
-        figure = ui.stratigraphy_figure(
-            layers, grid, axis=int(preview.get("axis", 0)),
-            title="Section through the model centre", wells=pipe.wells(),
-            highlight=preview.get("highlight"), picks=preview.get("picks"),
-            placement=drawing)
-        event = st.plotly_chart(
-            figure, width="stretch", key="strat_section",
-            on_select="rerun" if drawing else "ignore",
-            selection_mode="points")
-        if drawing and event and event.get("selection", {}).get("points"):
-            point = event["selection"]["points"][-1]
-            clicked = [float(point["x"]), float(point["y"])]
-            picks = st.session_state.setdefault("horizon_picks", [])
-            if not picks or clicked != picks[-1]:
-                picks.append(clicked)
-                st.rerun()
-        if len(faults):
-            st.caption(f"The section shows the stratigraphy before faulting. "
-                       f"{len(faults)} fault(s) displace it; the offset is in "
-                       f"the property volumes above, and the traces are on the "
-                       f"fault map below.")
-        for note in _stratigraphy_warnings(layers, grid,
-                                           cfg.source.frequency):
-            st.warning(note)
-
-        apply, revert = st.columns(2)
-        # "Would applying this change anything?" is a question about the
-        # stratigraphy, not about the parameter dictionary. The editor fills in
-        # defaults the configuration leaves out - an extent, a datum, a flat
-        # structure - so comparing dictionaries reports a change on every
-        # first render and the button is never honestly disabled.
-        changed = _describe_layers(chosen, new_parameters) != _describe_layers(
-            current, dict(cfg.geology.parameters or {}))
-        if apply.button("Apply stratigraphy", type="primary",
-                        disabled=not changed, key="geo_apply"):
-            cfg.geology.template = chosen
-            cfg.geology.parameters = new_parameters
-            # The drawing is in the configuration now, so the live picks are
-            # spent; leaving them would re-apply them over the next edit.
-            for key in ("horizon_picks", "horizon_token"):
-                st.session_state.pop(key, None)
-            invalidate()
+    st.markdown("**5 · Review and apply**")
+    drawing = bool(preview.get("placement"))
+    figure = ui.stratigraphy_figure(
+        layers, grid, axis=int(preview.get("axis", 0)), at=preview.get("at"),
+        title=_section_title(preview, grid), wells=pipe.wells(),
+        highlight=preview.get("highlight"), picks=preview.get("picks"),
+        placement=drawing)
+    event = st.plotly_chart(
+        figure, width="stretch", key="strat_section",
+        on_select="rerun" if drawing else "ignore", selection_mode="points")
+    if drawing and event and event.get("selection", {}).get("points"):
+        point = event["selection"]["points"][-1]
+        clicked = [float(point["x"]), float(point["y"])]
+        picks = st.session_state.setdefault("shape_picks", [])
+        if not picks or clicked != picks[-1]:
+            picks.append(clicked)
             st.rerun()
-        if revert.button("Discard changes", disabled=not changed,
-                         key="geo_revert"):
-            st.rerun()
-        if changed:
-            st.caption("The section above is the edit; the volumes below are "
-                       "still the applied model.")
+
+    if len(faults):
+        st.caption(f"The section shows the stratigraphy before faulting. "
+                   f"{len(faults)} fault(s) displace it; the offset is in the "
+                   f"property volumes above.")
+    for note in _stratigraphy_warnings(layers, grid, cfg.source.frequency):
+        st.warning(note)
+
+    changed = _describe_layers(chosen, parameters) != _describe_layers(
+        current, dict(cfg.geology.parameters or {}))
+    apply, revert = st.columns(2)
+    if apply.button("Apply to the model", type="primary", disabled=not changed,
+                    key="geo_apply"):
+        cfg.geology.template = chosen
+        cfg.geology.parameters = parameters
+        for key in ("shape_picks", "shape_token"):
+            st.session_state.pop(key, None)
+        invalidate()
+        st.rerun()
+    if revert.button("Discard changes", disabled=not changed, key="geo_revert"):
+        for key in ("shape_picks", "shape_token"):
+            st.session_state.pop(key, None)
+        st.rerun()
+    if changed:
+        st.caption("The section above is the edit; the volumes are still the "
+                   "applied model.")
 
 
-def _layer_cake_controls(parameters: dict, extent) -> dict:
-    """The units table and the one structure the whole package carries."""
+def _section_title(preview: dict, grid) -> str:
+    axis = int(preview.get("axis", 0))
+    at = preview.get("at")
+    if at is None:
+        return "Section through the model centre"
+    return f"Section at {'y' if axis == 0 else 'x'} = {float(at):,.0f} m"
+
+
+def _structure_controls(parameters: dict) -> dict:
+    """Step 2: the one structure the whole package carries.
+
+    One structure for all of it, deliberately. Deforming a single horizon and
+    leaving its neighbours flat drives it through them, which is a crossing
+    horizon rather than a structure.
+    """
     a, b, c, d = st.columns(4)
     structure = dict(parameters.get("structure") or {})
     style = str(structure.get("style", "flat"))
@@ -753,7 +831,7 @@ def _layer_cake_controls(parameters: dict, extent) -> dict:
     datum = b.number_input("Datum (m)", 0.0, 10000.0,
                            float(parameters.get("datum", 0.0)), 10.0,
                            key="cake_datum",
-                           help="Depth of the top of the first unit.")
+                           help="Depth of the top of the first layer.")
     new_structure: dict = {"style": style}
     if style == "dipping":
         new_structure["dip"] = c.number_input(
@@ -770,13 +848,19 @@ def _layer_cake_controls(parameters: dict, extent) -> dict:
         new_structure["azimuth"] = d.number_input(
             "Long-axis azimuth", 0.0, 360.0,
             float(structure.get("azimuth", 0.0)), 5.0, key="cake_fold_az")
+    else:
+        c.caption("Flat layering — no relief.")
+    return {**parameters, "datum": float(datum), "structure": new_structure}
 
-    st.caption("One row per unit, top first. Add and delete rows in the table. "
-               "Blank porosity, Vsh or NTG take the facies default. "
-               "**pinch out** `wedge` thins the unit along **azimuth**, from "
+
+def _layer_table(parameters: dict, extent) -> dict:
+    """Step 1: how many layers there are, and what each one is."""
+    st.caption("One row per layer, top first. Add and delete rows in the "
+               "table. Blank porosity, Vsh or NTG take the facies default. "
+               "**pinch out** `wedge` thins the layer along **azimuth**, from "
                "**from** to **to** as fractions of the model; `lens` tapers it "
-               "away from the centre with **from** and **to** as the two radii, "
-               "again as fractions.")
+               "away from the centre with **from** and **to** as the two "
+               "radii. For anything more particular, shape it in step 3.")
     rows = _units_to_rows(list(parameters.get("units") or DEFAULT_UNITS))
     edited = st.data_editor(
         rows, num_rows="dynamic", width="stretch", key="cake_units",
@@ -803,12 +887,28 @@ def _layer_cake_controls(parameters: dict, extent) -> dict:
             "NTG": st.column_config.NumberColumn(
                 "NTG", min_value=0.0, max_value=1.0, step=0.01),
         })
-    out = dict(parameters)
-    out["extent"] = [float(v) for v in extent]
-    out["datum"] = float(datum)
-    out["units"] = _rows_to_units(edited, extent)
-    out["structure"] = new_structure
-    return out
+    units = _carry_shaping(_rows_to_units(edited, extent),
+                           parameters.get("units") or [])
+    return {**parameters, "extent": [float(v) for v in extent],
+            "units": units}
+
+
+def _carry_shaping(units: list[dict], previous: list[dict]) -> list[dict]:
+    """Keep step 3's shaping across an edit to step 1's table.
+
+    The table has no column for a knee-point profile, so rebuilding the units
+    from it alone drops the shaping - silently, every time a name or a facies
+    is touched. Matched by name, because that is the only handle the table
+    keeps; rename a layer and its shaping is left behind, which is the
+    honest reading of renaming something.
+    """
+    shaped = {unit.get("name"): unit["thickness_profile"]
+              for unit in previous if unit.get("thickness_profile")}
+    for unit in units:
+        profile = shaped.get(unit.get("name"))
+        if profile is not None:
+            unit["thickness_profile"] = profile
+    return units
 
 
 def layer_overrides() -> list[dict]:

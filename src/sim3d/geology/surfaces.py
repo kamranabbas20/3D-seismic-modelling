@@ -212,6 +212,72 @@ class PickedThickness(Surface):
 
 
 @dataclass
+class SectionThickness(Surface):
+    """A *thickness* defined on several sections, interpolated between them.
+
+    The general form of :class:`PickedThickness`.  Each section is a line
+    across the model at a fixed position on the other axis, carrying its own
+    knee points:
+
+    ``{"at": 500.0, "points": [(0.0, 90.0), (2000.0, 30.0)]}``
+
+    Thickness is interpolated in two separable steps - along each section
+    between its own knee points, then across the model between the sections
+    - so an edit made on one section stays put and only its neighbourhood
+    moves.  Outside the outermost sections the nearest one is held flat, for
+    the same reason the knee points are: a section says nothing about ground
+    beyond the ones that were drawn, so nothing is invented for it.
+
+    Every thickness stays non-negative through both steps, which is what
+    keeps the horizons that accumulate from it from ever crossing.
+    """
+
+    sections: list = field(default_factory=list)
+    axis: int = 0
+
+    def _profiles(self, along):
+        ordered = sorted(self.sections, key=lambda s: float(s["at"]))
+        positions = np.array([float(s["at"]) for s in ordered], dtype=float)
+        if len(np.unique(positions)) != len(positions):
+            raise ConfigError(
+                "two sections sit at the same position; move one or merge them")
+        stack = []
+        for section in ordered:
+            points = sorted((float(a), float(b))
+                            for a, b in (section.get("points") or []))
+            if not points:
+                raise ConfigError(
+                    f"the section at {section.get('at')} has no knee points")
+            stack.append(np.interp(
+                along, [a for a, _ in points],
+                np.clip([b for _, b in points], 0.0, None)))
+        return positions, np.stack(stack, axis=-1)
+
+    def depth(self, x, y):
+        if not self.sections:
+            raise ConfigError(
+                "a section thickness needs at least one section; draw one or "
+                "give the unit a constant thickness instead")
+        if self.axis not in (0, 1):
+            raise ConfigError(f"axis must be 0 (x) or 1 (y), got {self.axis}")
+        along = np.asarray(x if self.axis == 0 else y, dtype=float)
+        across = np.asarray(y if self.axis == 0 else x, dtype=float)
+        positions, stack = self._profiles(along)
+        if positions.size == 1:
+            return stack[..., 0]
+
+        upper = np.clip(np.searchsorted(positions, across), 1, positions.size - 1)
+        lower = upper - 1
+        span = positions[upper] - positions[lower]
+        # Clipped, so beyond the outermost sections the nearest one is held
+        # flat rather than extrapolated into ground nobody drew.
+        weight = np.clip((across - positions[lower]) / span, 0.0, 1.0)
+        first = np.take_along_axis(stack, lower[..., None], axis=-1)[..., 0]
+        second = np.take_along_axis(stack, upper[..., None], axis=-1)[..., 0]
+        return first * (1.0 - weight) + second * weight
+
+
+@dataclass
 class Truncated(Surface):
     """A surface clamped so it can touch the one above but never cross it.
 

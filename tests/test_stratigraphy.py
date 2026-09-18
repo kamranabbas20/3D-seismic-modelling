@@ -455,3 +455,149 @@ def test_picks_are_measured_against_a_dipping_top_not_a_flat_one():
     profile = picks_to_profile(picks, layers, 1, g, axis=0)
     assert [t for _, t in profile["points"]] == pytest.approx([80.0, 80.0],
                                                               abs=1e-6)
+
+
+def test_shaping_survives_an_edit_to_the_layer_table():
+    """A layer shaped in step 3 keeps its shape when step 1 is touched.
+
+    The table has no column for a knee-point profile, so rebuilding the units
+    from it alone drops the shaping - silently, every time a name or a facies
+    is changed.
+    """
+    from sim3d.ui.streamlit_app import _carry_shaping
+
+    profile = {"axis": 0, "sections": [{"at": 1500.0,
+                                        "points": [[0.0, 90.0], [3000.0, 0.0]]}]}
+    previous = [{"name": "a", "facies": "shale", "thickness": 900.0},
+                {"name": "shaped", "facies": "clean_sandstone",
+                 "thickness": 100.0, "thickness_profile": profile}]
+    # Step 1 comes back from the table with the facies changed and no profile.
+    from_table = [{"name": "a", "facies": "shale", "thickness": 900.0},
+                  {"name": "shaped", "facies": "shaly_sandstone",
+                   "thickness": 100.0}]
+    carried = _carry_shaping([dict(u) for u in from_table], previous)
+    assert carried[1]["thickness_profile"] == profile
+    assert carried[1]["facies"] == "shaly_sandstone", "the edit still applies"
+    assert "thickness_profile" not in carried[0]
+
+    # Renaming leaves the shaping behind, which is what renaming means.
+    renamed = _carry_shaping(
+        [{"name": "something_else", "facies": "shale", "thickness": 100.0}],
+        previous)
+    assert "thickness_profile" not in renamed[0]
+
+
+# ------------------------------------------- sections, interpolated between
+def test_sections_interpolate_between_and_hold_flat_outside():
+    from sim3d.geology.surfaces import SectionThickness
+
+    surface = SectionThickness(axis=0, sections=[
+        {"at": 1000.0, "points": [[0.0, 100.0], [3000.0, 100.0]]},
+        {"at": 2000.0, "points": [[0.0, 20.0], [3000.0, 20.0]]}])
+    x, y = np.meshgrid(np.linspace(0.0, 3000.0, 4),
+                       np.array([500.0, 1000.0, 1500.0, 2000.0, 2500.0]),
+                       indexing="ij")
+    t = surface.depth(x, y)[0]
+    assert t[0] == pytest.approx(100.0)      # before the first section, flat
+    assert t[1] == pytest.approx(100.0)      # on it
+    assert t[2] == pytest.approx(60.0)       # halfway between
+    assert t[3] == pytest.approx(20.0)       # on the second
+    assert t[4] == pytest.approx(20.0)       # beyond it, flat
+
+
+def test_one_section_is_constant_across_the_model():
+    """The single-section case is the many-section one with nothing to
+    interpolate towards, and behaves the same as PickedThickness."""
+    from sim3d.geology.surfaces import PickedThickness, SectionThickness
+
+    points = [[0.0, 90.0], [1500.0, 30.0], [3000.0, 0.0]]
+    x, y = np.meshgrid(np.linspace(0.0, 3000.0, 13),
+                       np.linspace(0.0, 3000.0, 7), indexing="ij")
+    one = SectionThickness(axis=0, sections=[{"at": 1500.0, "points": points}])
+    assert np.allclose(one.depth(x, y), PickedThickness(points=points).depth(x, y))
+
+
+def test_an_edit_on_one_section_does_not_move_a_distant_one():
+    """The point of shaping section by section."""
+    from sim3d.geology.surfaces import SectionThickness
+
+    base = [{"at": 500.0, "points": [[0.0, 80.0], [3000.0, 80.0]]},
+            {"at": 1500.0, "points": [[0.0, 80.0], [3000.0, 80.0]]},
+            {"at": 2500.0, "points": [[0.0, 80.0], [3000.0, 80.0]]}]
+    edited = [dict(s) for s in base]
+    edited[0] = {"at": 500.0, "points": [[0.0, 10.0], [3000.0, 10.0]]}
+    x, y = np.meshgrid(np.array([1500.0]), np.array([500.0, 2500.0]),
+                       indexing="ij")
+    before = SectionThickness(axis=0, sections=base).depth(x, y)
+    after = SectionThickness(axis=0, sections=edited).depth(x, y)
+    assert after[0, 0] == pytest.approx(10.0)      # the edited section moved
+    assert after[0, 1] == pytest.approx(before[0, 1])   # the far one did not
+
+
+def test_sections_shape_a_layer_in_both_map_directions():
+    units = [{"name": "over", "facies": "shale", "thickness": 900.0},
+             {"name": "shaped", "facies": "clean_sandstone",
+              "is_reservoir": True, "thickness_profile": {"axis": 0, "sections": [
+                  {"at": 500.0, "points": [[0.0, 120.0], [3000.0, 120.0]]},
+                  {"at": 1500.0, "points": [[0.0, 120.0], [1800.0, 0.0],
+                                            [3000.0, 0.0]]},
+                  {"at": 2500.0, "points": [[0.0, 50.0], [3000.0, 50.0]]}]}},
+             {"name": "under", "facies": "shale", "thickness": 400.0}]
+    layers, _ = layer_cake(extent=EXTENT, units=units,
+                           structure={"style": "dipping", "dip": 5.0})
+    model = build_geology(grid(), layers)
+    t = thicknesses(model, "shaped")
+    g = model.grid
+    row = lambda at: t[:, int(np.argmin(np.abs(g.axis(1) - at)))]   # noqa: E731
+    assert row(500.0) == pytest.approx(120.0)
+    assert row(2500.0) == pytest.approx(50.0)
+    assert row(1500.0)[-1] == pytest.approx(0.0)        # pinched out there
+    assert np.all(t >= -1e-9)                           # and never negative
+    tops = [model.horizons[l.name] for l in model.layers]
+    for upper, lower in zip(tops, tops[1:]):
+        assert np.all(lower >= upper - 1e-9)
+
+
+def test_a_broken_set_of_sections_is_refused():
+    from sim3d.geology.surfaces import SectionThickness
+
+    x = y = np.zeros((2, 2))
+    with pytest.raises(ConfigError):
+        SectionThickness(sections=[]).depth(x, y)
+    with pytest.raises(ConfigError):
+        SectionThickness(sections=[{"at": 100.0, "points": []}]).depth(x, y)
+    with pytest.raises(ConfigError):
+        SectionThickness(sections=[
+            {"at": 100.0, "points": [[0.0, 10.0]]},
+            {"at": 100.0, "points": [[0.0, 20.0]]}]).depth(x, y)
+    with pytest.raises(ConfigError):
+        layer_cake(extent=EXTENT, units=[
+            {"name": "gone", "facies": "shale", "thickness_profile": {
+                "sections": [{"at": 0.0, "points": [[0.0, 0.0]]}]}}])
+
+
+def test_a_section_converts_against_its_own_top_not_the_models_middle():
+    """With any dip across the sections, using the middle for all of them
+    puts in a wedge nobody drew: two bases drawn 70 m below their own tops
+    came out as -70 m and +210 m."""
+    from sim3d.geology.picking import _section_top, picks_to_section
+
+    units = [{"name": "over", "facies": "shale", "thickness": 900.0},
+             {"name": "target", "facies": "clean_sandstone", "thickness": 100.0,
+              "is_reservoir": True},
+             {"name": "under", "facies": "shale", "thickness": 400.0}]
+    layers, _ = layer_cake(extent=EXTENT, units=units,
+                           structure={"style": "dipping", "dip": 8.0,
+                                      "azimuth": 0.0})     # dips towards +y
+    g = grid()
+    surface = layers[1].top.on_grid(g)
+    for at in (500.0, 2500.0):
+        column = int(np.argmin(np.abs(g.axis(1) - at)))
+        here = float(surface[20, column])
+        section = picks_to_section([[g.axis(0)[20], here + 70.0]], layers, 1,
+                                   g, 0, at)
+        assert section["points"][0][1] == pytest.approx(70.0)
+        assert section["at"] == pytest.approx(at)
+    # The two tops really are different, so the check above has teeth.
+    assert (_section_top(layers, 1, g, 0, 500.0)[1][20]
+            != pytest.approx(_section_top(layers, 1, g, 0, 2500.0)[1][20]))

@@ -17,7 +17,8 @@ from .faults import Fault, FaultSet
 from .heterogeneity import HeterogeneitySpec
 from .facies import get_facies
 from .surfaces import (Anticline, Composite, Dipping, Flat, Lens,
-                       PickedThickness, Relief, Surface, Syncline, Wedge)
+                       PickedThickness, Relief, SectionThickness, Surface,
+                       Syncline, Wedge)
 
 
 def _overburden(z_reservoir: float) -> list[Layer]:
@@ -317,18 +318,41 @@ def _pinch_thickness(unit: dict, extent) -> Surface:
     # with either - two sources for one number is how they disagree.
     profile = unit.get("thickness_profile")
     if profile:
+        name = unit.get("name", "?")
+        axis = int(profile.get("axis", 0))
+        sections = profile.get("sections")
+        if sections:
+            # Several sections, interpolated between: an edit made on one
+            # stays put and only its neighbourhood moves.
+            everything = [float(t) for section in sections
+                          for _, t in (section.get("points") or [])]
+            if not everything:
+                raise ConfigError(
+                    f"unit {name!r} has sections but no knee points on any of "
+                    f"them; draw at least one or remove the profile")
+            if max(everything) <= 0.0:
+                raise ConfigError(
+                    f"unit {name!r} was drawn with no thickness on any section; "
+                    f"a unit that is absent everywhere should be removed rather "
+                    f"than drawn flat against its own top")
+            return SectionThickness(
+                sections=[{"at": float(section["at"]),
+                           "points": [(float(a), float(b))
+                                      for a, b in section["points"]]}
+                          for section in sections], axis=axis)
+
         points = profile.get("points") or []
         if len(points) < 1:
             raise ConfigError(
-                f"unit {unit.get('name', '?')!r} has a drawn thickness with no "
+                f"unit {name!r} has a drawn thickness with no "
                 f"points; draw at least one or remove the profile")
         if max(float(t) for _, t in points) <= 0.0:
             raise ConfigError(
-                f"unit {unit.get('name', '?')!r} was drawn with no thickness "
+                f"unit {name!r} was drawn with no thickness "
                 f"anywhere; a unit that is absent everywhere should be removed "
                 f"rather than drawn flat against its own top")
         return PickedThickness(points=[(float(a), float(b)) for a, b in points],
-                               axis=int(profile.get("axis", 0)))
+                               axis=axis)
 
     thickness = float(unit.get("thickness", 100.0))
     if thickness <= 0:
@@ -410,11 +434,13 @@ def layer_cake(extent=(3000.0, 3000.0, 2200.0), datum=0.0, units=None,
     fractions of the model) or radially
     (``{"shape": "lens", "radius": [900, 500]}``).
 
-    ``thickness_profile`` is the drawn alternative:
-    ``{"axis": 0, "points": [[500, 90], [2000, 0]]}`` interpolates the
-    thickness between picked positions, which is what the Geology page
-    writes when a horizon is drawn on a section.  It replaces ``thickness``
-    and ``pinch_out`` for that unit rather than combining with them.
+    ``thickness_profile`` is the drawn alternative and replaces ``thickness``
+    and ``pinch_out`` for that unit rather than combining with them.  One
+    section, ``{"axis": 0, "points": [[500, 90], [2000, 0]]}``, interpolates
+    between knee points along that axis and holds constant across the other.
+    Several, ``{"axis": 0, "sections": [{"at": 500, "points": [...]},
+    {"at": 2500, "points": [...]}]}``, interpolate between the sections as
+    well, which is how a unit is shaped in both map directions.
 
     The last unit has no base: like every other template here, it extends to
     the bottom of the model.

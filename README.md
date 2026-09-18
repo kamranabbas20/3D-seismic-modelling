@@ -297,6 +297,20 @@ against a measured throughput.
 
 ## Building the earth
 
+The **Geology** page is a numbered sequence. Each step writes into the same
+configuration, a section redraws under all of them, and one **Apply** at the
+bottom commits the lot.
+
+| step | what you set |
+|---|---|
+| **1 · Layers** | how many, and what each one is — name, facies, thickness, reservoir flag, porosity / Vsh / NTG |
+| **2 · Structure** | datum, and the one structure the whole package carries: flat, dipping (dip + azimuth), anticline or syncline |
+| **3 · Shape** | knee points for one layer's thickness, section by section, interpolated between |
+| **4 · Faults** | draw the trace, set dip, throw, transmissibility |
+| **5 · Review and apply** | the section, the warnings, and the commit |
+
+
+
 Nine ready-made templates — flat, dipping, anticline, fault compartment,
 channel, lens, stacked sands, three-layer, five-layer — plus `layer_cake`,
 the general one they are special cases of. All of it is editable from the
@@ -306,6 +320,28 @@ its signature, so a template that gains a dial gains a control), or choose
 thickness, facies, reservoir flag and petrophysics per unit. A section
 through the model redraws as you type, before anything is built, and warns
 about what the grid or the wavelet will not carry.
+
+### Knee points, and sections interpolated between
+
+Step 3 shapes one layer at a time. A layer's thickness is a set of **knee
+points** along a section — typed into a table or clicked onto the section,
+the same numbers either way — and a set of **sections** across the model.
+Between knee points the thickness is linear; between sections it is
+interpolated; outside either, the nearest one is held flat, because a
+section says nothing about ground nobody drew on.
+
+![Shaping a layer section by section](docs/figures/section-shaping.png)
+
+Three sections here: a thick one at the front, one that pinches the layer
+out past x = 2,100 m, and a thin one at the back. Everything between them is
+interpolated, and the model reproduces each drawn profile exactly.
+
+Two details that matter in use. Clicking is **off by default** — the review
+section is always on screen, so a click while reading step 1 would otherwise
+add a knee point to whichever layer step 3 happened to have selected. And a
+clicked depth is converted against the layer's own top **on that section**:
+with any dip across the sections, converting both against the model's middle
+instead turns two bases drawn 70 m below their tops into −70 m and +210 m.
 
 ### Pinchouts
 

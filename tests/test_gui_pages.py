@@ -508,35 +508,41 @@ def test_the_geology_page_still_has_no_execution_button():
                 if any(word in label.lower() for word in ("run", "migrate"))]
 
 
-def test_a_horizon_can_be_drawn_on_the_section():
-    """Wells and geobodies were click-placed on a map; horizons were not
-    drawable at all. This is the section-view equivalent."""
+def test_the_geology_page_is_a_numbered_sequence_of_steps():
+    """The controls existed but were scattered; the ask was for structure."""
+    app = _goto(_app(), "Geology")
+    labels = [label for tab in app.tabs for label in ([tab.label]
+              if hasattr(tab, "label") else [])]
+    for step in ("1 · Layers", "2 · Structure", "3 · Shape", "4 · Faults"):
+        assert step in labels, f"{step!r} missing from {labels}"
+    assert "5 · Review and apply" in app.markdown[-1].value or any(
+        "5 · Review and apply" in block.value for block in app.markdown)
+
+
+def test_step_three_shapes_a_layer_with_knee_points():
+    """Knee points are typed or clicked - the same numbers either way."""
     app = _goto(_app(), "Geology")
     _widget(app, "selectbox", "geo_template").set_value("layer_cake")
     app.run()
-    toggle = _widget(app, "toggle", "draw_horizon")
-    assert not toggle.value, "drawing must be off until it is asked for"
+    assert _widget(app, "selectbox", "shape_unit").options
+    assert _widget(app, "radio", "shape_axis").options == ["x", "y"]
+    # A section to work on, and the option of another.
+    assert "+ new section" in _widget(app, "selectbox", "shape_section").options
+    assert _widget(app, "button", "shape_undo").disabled
+    assert not app.exception
+
+
+def test_clicking_the_section_is_off_until_it_is_asked_for():
+    """The review section is always on screen. If it captured clicks by
+    default, a click while reading step 1 would add a knee point to whichever
+    layer step 3 happened to have selected."""
+    app = _goto(_app(), "Geology")
+    _widget(app, "selectbox", "geo_template").set_value("layer_cake")
+    app.run()
+    toggle = _widget(app, "toggle", "shape_clicking")
+    assert not toggle.value
     toggle.set_value(True)
     app.run()
-    assert not app.exception
-    # The unit being drawn and the axis it is drawn along are both choices.
-    assert _widget(app, "selectbox", "horizon_unit").options
-    assert _widget(app, "radio", "horizon_axis").options == ["x", "y"]
-    # Nothing to undo before anything is drawn.
-    assert _widget(app, "button", "horizon_undo").disabled
-    assert _widget(app, "button", "horizon_clear").disabled
-
-
-def test_drawing_stays_off_and_leaves_no_picks_behind():
-    app = _goto(_app(), "Geology")
-    _widget(app, "selectbox", "geo_template").set_value("layer_cake")
-    app.run()
-    assert "horizon_picks" not in app.session_state
-    _widget(app, "toggle", "draw_horizon").set_value(True)
-    app.run()
-    _widget(app, "toggle", "draw_horizon").set_value(False)
-    app.run()
-    assert "horizon_picks" not in app.session_state
     assert not app.exception
 
 
