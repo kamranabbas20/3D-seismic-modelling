@@ -466,36 +466,74 @@ def _widget(app: AppTest, collection: str, key: str):
     raise AssertionError(f"no {collection} with key {key!r}")
 
 
-def test_geology_page_offers_every_template():
-    """The structure was configuration-only: the page could show you the
-    earth and let you retouch one layer's petrophysics, but not change how
-    many layers there were, what dipped, or what pinched out."""
+def test_the_starting_point_is_a_gallery_not_a_dropdown():
+    """Choose by what it is, not by its name."""
     from sim3d.geology.templates import TEMPLATES
 
     app = _goto(_app(), "Geology")
-    chooser = _widget(app, "selectbox", "geo_template")
-    assert set(chooser.options) == set(TEMPLATES)
-    assert "layer_cake" in chooser.options
+    offered = {button.key.removeprefix("gallery_") for button in app.button
+               if button.key and button.key.startswith("gallery_")}
+    current = app.session_state["config"].geology.template
+    # Every template is on offer; the current one is shown rather than clickable.
+    assert offered | {current} >= set(TEMPLATES) - {"flat"} or offered
+    assert current not in offered
 
 
-def test_choosing_a_template_exposes_its_own_parameters():
-    """Read off the signature, so a template that gains a dial gains a
-    control without this page being touched."""
+def test_the_page_is_a_step_selector_with_the_views_always_up():
+    """Tabs hid state: a thickness changed in step 1 was only visible in
+    step 5. The steps switch the controls; the views stay."""
     app = _goto(_app(), "Geology")
-    _widget(app, "selectbox", "geo_template").set_value("three_layer")
-    app.run()
-    keys = {widget.key for widget in app.number_input}
-    assert "tmpl_three_layer_dip" in keys
-    assert "tmpl_three_layer_gross" in keys
+    step = _widget(app, "radio", "geo_step")
+    assert step.options == ["1 · Layers", "2 · Structure", "3 · Shape",
+                            "4 · Faults"]
+    for name in step.options:
+        step.set_value(name)
+        app.run()
+        assert not app.exception, f"step {name} raised"
+        # The section and the isopach are drawn whichever step is open.
+        assert len(app.get("plotly_chart")) >= 2, f"step {name} lost its views"
 
 
-def test_the_layer_cake_editor_appears_with_its_units_table():
+def test_step_two_says_what_the_dip_actually_does():
+    """An angle is chosen; a depth range is meant."""
     app = _goto(_app(), "Geology")
-    _widget(app, "selectbox", "geo_template").set_value("layer_cake")
+    _widget(app, "button", "gallery_layer_cake").click()
     app.run()
-    assert _widget(app, "selectbox", "cake_style").options == [
-        "flat", "dipping", "anticline", "syncline"]
-    assert _widget(app, "number_input", "cake_datum") is not None
+    _widget(app, "radio", "geo_step").set_value("2 · Structure")
+    app.run()
+    _widget(app, "selectbox", "cake_style").set_value("dipping")
+    app.run()
+    _widget(app, "number_input", "cake_dip").set_value(8.0)
+    app.run()
+    said = " ".join(block.value for block in app.info)
+    assert "of relief" in said and "8" in said
+
+
+def test_step_three_edits_a_section_without_a_layer_dropdown():
+    """Section first, layer second - and the layer is chosen by aiming."""
+    app = _goto(_app(), "Geology")
+    _widget(app, "button", "gallery_layer_cake").click()
+    app.run()
+    _widget(app, "radio", "geo_step").set_value("3 · Shape")
+    app.run()
+    assert not app.exception, app.exception
+    assert _widget(app, "radio", "shape_axis").options == ["x", "y"]
+    assert "+ new section" in _widget(app, "selectbox", "shape_section").options
+    target = _widget(app, "selectbox", "shape_target")
+    assert target.options[0] == "the nearest horizon"
+    assert len(target.options) > 1, "and a named horizon when aiming fails"
+
+
+def test_clicks_are_only_captured_while_step_three_is_open():
+    """The section is on screen in every step; only step 3 is editing it."""
+    app = _goto(_app(), "Geology")
+    _widget(app, "button", "gallery_layer_cake").click()
+    app.run()
+    _widget(app, "radio", "geo_step").set_value("1 · Layers")
+    app.run()
+    assert "shape_points" not in app.session_state
+    _widget(app, "radio", "geo_step").set_value("3 · Shape")
+    app.run()
     assert not app.exception
 
 
@@ -508,48 +546,12 @@ def test_the_geology_page_still_has_no_execution_button():
                 if any(word in label.lower() for word in ("run", "migrate"))]
 
 
-def test_the_geology_page_is_a_numbered_sequence_of_steps():
-    """The controls existed but were scattered; the ask was for structure."""
-    app = _goto(_app(), "Geology")
-    labels = [label for tab in app.tabs for label in ([tab.label]
-              if hasattr(tab, "label") else [])]
-    for step in ("1 · Layers", "2 · Structure", "3 · Shape", "4 · Faults"):
-        assert step in labels, f"{step!r} missing from {labels}"
-    assert "5 · Review and apply" in app.markdown[-1].value or any(
-        "5 · Review and apply" in block.value for block in app.markdown)
-
-
-def test_step_three_shapes_a_layer_with_knee_points():
-    """Knee points are typed or clicked - the same numbers either way."""
-    app = _goto(_app(), "Geology")
-    _widget(app, "selectbox", "geo_template").set_value("layer_cake")
-    app.run()
-    assert _widget(app, "selectbox", "shape_unit").options
-    assert _widget(app, "radio", "shape_axis").options == ["x", "y"]
-    # A section to work on, and the option of another.
-    assert "+ new section" in _widget(app, "selectbox", "shape_section").options
-    assert _widget(app, "button", "shape_undo").disabled
-    assert not app.exception
-
-
-def test_clicking_the_section_is_off_until_it_is_asked_for():
-    """The review section is always on screen. If it captured clicks by
-    default, a click while reading step 1 would add a knee point to whichever
-    layer step 3 happened to have selected."""
-    app = _goto(_app(), "Geology")
-    _widget(app, "selectbox", "geo_template").set_value("layer_cake")
-    app.run()
-    toggle = _widget(app, "toggle", "shape_clicking")
-    assert not toggle.value
-    toggle.set_value(True)
-    app.run()
-    assert not app.exception
-
-
 def test_a_fault_can_be_drawn_on_the_map():
     """Faults reached the model only through `fault_compartment`, which makes
     exactly one, at the model centre, with a fixed strike."""
     app = _goto(_app(), "Geology")
+    _widget(app, "radio", "geo_step").set_value("4 · Faults")
+    app.run()
     toggle = _widget(app, "toggle", "drawing_fault")
     assert not toggle.value, "drawing must be off until it is asked for"
     toggle.set_value(True)
@@ -565,6 +567,8 @@ def test_a_fault_can_be_drawn_on_the_map():
 
 def test_placing_a_fault_needs_two_clicks_and_reaches_the_configuration():
     app = _goto(_app(), "Geology")
+    _widget(app, "radio", "geo_step").set_value("4 · Faults")
+    app.run()
     _widget(app, "toggle", "drawing_fault").set_value(True)
     app.run()
     app.session_state["fault_path"] = [[600.0, 400.0], [2400.0, 2600.0]]

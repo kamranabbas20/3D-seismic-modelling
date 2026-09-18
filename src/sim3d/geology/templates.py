@@ -10,6 +10,8 @@ from __future__ import annotations
 
 from typing import Callable
 
+import numpy as np
+
 from ..core.errors import ConfigError
 from ..core.geometry import bearing_vector
 from .builder import Layer
@@ -304,6 +306,44 @@ def _structure_relief(structure: dict | None, extent) -> Surface | None:
     raise ConfigError(
         f"unknown structural style {style!r}; choose from flat, dipping, "
         f"anticline, syncline")
+
+
+def structure_summary(structure: dict | None, extent, datum: float = 0.0) -> dict:
+    """What a structural style actually does to the model, in metres.
+
+    A dip is chosen as an angle and felt as a depth range.  Nobody computes
+    6 degrees over three kilometres in their head, and that number - 315 m of
+    relief - is the one being chosen.  Returns ``shallowest``, ``deepest``,
+    ``relief`` and a sentence saying so.
+    """
+    relief = _structure_relief(structure, extent)
+    if relief is None:
+        return {"shallowest": float(datum), "deepest": float(datum),
+                "relief": 0.0,
+                "text": f"Flat layering: every horizon sits at its own depth "
+                        f"below {float(datum):,.0f} m."}
+    # Corners and centre are enough: every style here is monotone along one
+    # bearing or radially symmetric about one point.
+    xs = np.array([0.0, extent[0], 0.0, extent[0], 0.5 * extent[0]])
+    ys = np.array([0.0, 0.0, extent[1], extent[1], 0.5 * extent[1]])
+    values = np.asarray(relief.depth(xs, ys), dtype=float) + float(datum)
+    shallowest, deepest = float(values.min()), float(values.max())
+    style = str((structure or {}).get("style", "flat")).lower()
+    span = deepest - shallowest
+    if style == "dipping":
+        dip = float((structure or {}).get("dip", 0.0))
+        azimuth = float((structure or {}).get("azimuth", 90.0))
+        reach = abs(extent[0] * np.sin(np.radians(azimuth))) + \
+            abs(extent[1] * np.cos(np.radians(azimuth)))
+        text = (f"{dip:g}° towards {azimuth:g}° = **{span:,.0f} m** of relief "
+                f"across {reach:,.0f} m of model. The first horizon runs "
+                f"{shallowest:,.0f} m at the shallow edge to {deepest:,.0f} m "
+                f"at the deep one.")
+    else:
+        text = (f"{span:,.0f} m of relief: the first horizon runs "
+                f"{shallowest:,.0f} m at the crest to {deepest:,.0f} m off it.")
+    return {"shallowest": shallowest, "deepest": deepest, "relief": span,
+            "text": text}
 
 
 def _pinch_thickness(unit: dict, extent) -> Surface:

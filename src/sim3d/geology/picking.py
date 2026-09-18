@@ -72,6 +72,26 @@ def section_to_picks(section: dict, layers, index: int, grid,
             for position, thickness in (section.get("points") or [])]
 
 
+def nearest_horizon(layers, grid, axis: int, at: float, position: float,
+                    depth: float) -> int:
+    """Which layer's base a click at ``(position, depth)`` is aiming at.
+
+    Lets a section be edited horizon by horizon without a dropdown: click
+    near the base of a layer and it is that layer you are moving.  The last
+    layer runs to the bottom of the model and has no base to move, so it is
+    never the answer.
+    """
+    if len(layers) < 2:
+        raise ConfigError(
+            "a stack of one layer has no base to move; add a layer below it")
+    distances = []
+    for index in range(len(layers) - 1):
+        along, top = _section_top(layers, index + 1, grid, axis, at)
+        here = float(np.interp(float(position), along, top))
+        distances.append(abs(float(depth) - here))
+    return int(np.argmin(distances))
+
+
 def profile_sections(profile: dict) -> list:
     """Every section of a profile, whichever form it was written in.
 

@@ -46,10 +46,11 @@ from sim3d.fourd.noise import NoiseModel
 from sim3d.geology.bodies import BODY_TYPES, GeoBody
 from sim3d.wave.wavelets import DEFAULT_ORMSBY_CORNERS, WAVELETS
 from sim3d.geology.facies import FACIES
-from sim3d.geology.templates import DEFAULT_UNITS, TEMPLATES, template
+from sim3d.geology.templates import (DEFAULT_UNITS, TEMPLATES, template,
+                                     structure_summary)
 from sim3d.geology.faults import build_faults
-from sim3d.geology.picking import (picks_to_section, profile_sections,
-                                   section_to_picks)
+from sim3d.geology.picking import (nearest_horizon, picks_to_section,
+                                   profile_sections, section_to_picks)
 from sim3d.rockphysics.dryframe import DRY_FRAME_MODELS
 from sim3d.core.graph import explain as explain_dependencies
 from sim3d.core.units import PSI, pa_to_psi, psi_to_pa, si_to_stb_per_day
@@ -365,14 +366,16 @@ def page_geology() -> None:
 
     left, right = st.columns(2)
     left.subheader("Layers")
-    left.dataframe({
-        layer.name: {
-            "facies": layer.facies,
-            "cells (%)": round(100 * float(np.mean(geology.layer_index == i)), 1),
-            "reservoir": bool(geology.reservoir_mask[geology.layer_index == i].any()),
-        }
+    # One row per layer, not one column: a column of mixed text, number and
+    # boolean has no Arrow type, so Streamlit was silently re-typing this on
+    # every rerun and logging a stack trace while it did.
+    left.dataframe([
+        {"layer": layer.name,
+         "facies": layer.facies,
+         "cells (%)": round(100 * float(np.mean(geology.layer_index == i)), 1),
+         "reservoir": bool(geology.reservoir_mask[geology.layer_index == i].any())}
         for i, layer in enumerate(geology.layers)
-    }, width="stretch")
+    ], width="stretch", hide_index=True)
     with left:
         _layer_properties(geology)
     right.subheader("Faults")
@@ -553,237 +556,329 @@ def _describe_layers(name: str, parameters: dict) -> str:
     return repr((name, layers, faults))
 
 
-def _shape_editor(pipe, parameters: dict, layers) -> tuple[dict, dict]:
-    """Step 3: shape one unit with knee points, section by section.
+def _describe_layers(name: str, parameters: dict) -> str:
+    """A canonical description of what a template and its parameters build.
 
-    A unit's thickness is a set of knee points along a section, and a set of
-    sections across the model.  Between knee points it is linear, between
-    sections it is interpolated, and beyond either the nearest one is held
-    flat - a section says nothing about ground nobody drew on, so nothing is
-    invented for it.
+    Surfaces and layers are dataclasses all the way down, so their repr is a
+    faithful, comparable statement of the stratigraphy. A configuration that
+    fails to build compares equal to nothing, which is the right answer: a
+    broken current state is always a change worth applying away from.
+    """
+    try:
+        layers, faults = template(name, **parameters)
+    except Exception as exc:                      # noqa: BLE001 - reported, not raised
+        return f"unbuildable: {name}: {exc}"
+    return repr((name, layers, faults))
 
-    Knee points can be clicked on the section or typed into the table; they
-    are the same numbers either way.  What is clicked is a *base depth* and
-    what is stored is the thickness that implies, measured from this unit's
-    own top **on this section** and clamped at zero, so the horizons that
-    accumulate from it can touch but never cross.
+
+#: Which template each gallery card offers, and the one line that says why.
+_GALLERY = [
+    ("layer_cake", "Any number of layers, each shaped how you like"),
+    ("three_layer", "Shale, sand, shale — the textbook 4D case"),
+    ("five_layer", "A reflective overburden above a thin target"),
+    ("anticline", "A gentle four-way dip closure"),
+    ("dipping", "Regional dip carried by the whole section"),
+    ("fault_compartment", "An anticline cut by one sealing fault"),
+    ("stacked_sands", "Several reservoir units separated by shale"),
+    ("channel", "A narrow, strongly anisotropic body"),
+    ("lens", "A body that thins to nothing at its edges"),
+    ("flat", "Horizontal layering, tabular reservoir"),
+]
+
+
+def _shapes() -> dict:
+    """Per-layer thickness profiles being edited, by layer name.
+
+    Held apart from the widgets because no widget carries them: the layer
+    table has no knee-point column, and a click on the section belongs to a
+    layer rather than to any control on the page.
+    """
+    return st.session_state.setdefault("geo_shapes", {})
+
+
+def _seed_shapes(parameters: dict) -> None:
+    st.session_state.geo_shapes = {
+        unit["name"]: unit["thickness_profile"]
+        for unit in (parameters.get("units") or [])
+        if unit.get("name") and unit.get("thickness_profile")}
+
+
+def _template_gallery(current: str) -> str:
+    """Step 0: choose a starting point by what it is, not by its name.
+
+    Folded away once chosen: it is a decision made once per model, and left
+    open it took a third of the screen off every step that follows.
+    """
+    chosen = current
+    with st.expander(f"Starting point — **{current}**", expanded=False):
+        for row in range(0, len(_GALLERY), 5):
+            for column, (name, blurb) in zip(st.columns(5), _GALLERY[row:row + 5]):
+                with column:
+                    if name == current:
+                        st.markdown(f"**{name}** ✓")
+                    elif st.button(name, key=f"gallery_{name}", width="stretch"):
+                        chosen = name
+                    st.caption(blurb)
+    return chosen
+
+
+def _shape_editor(pipe, parameters: dict, layers, faults) -> dict:
+    """Step 3: edit every horizon on one section, with no layer dropdown.
+
+    Section first, layer second - the other way round from how this started,
+    and the way a section is actually interpreted. A click lands on whichever
+    horizon is nearest, so choosing the layer is something you do by aiming
+    rather than by navigating.
+
+    What is clicked is a base depth; what is stored is the thickness it
+    implies, measured from that layer's own top **on this section** and
+    clamped at zero. Thicknesses are non-negative, so the horizons that
+    accumulate from them can touch but never cross, whatever is clicked.
     """
     grid = pipe.domains.geology
     units = list(parameters.get("units") or [])
     names = [unit.get("name", f"unit_{i + 1}") for i, unit in enumerate(units)]
-    if not names:
-        st.info("Add a layer in step 1 first.")
-        return parameters, {}
+    if len(names) < 2:
+        st.info("Add a second layer in step 1: the last layer runs to the "
+                "bottom of the model and has no base to shape.")
+        return {}
 
-    a, b = st.columns([2, 1])
-    unit_name = a.selectbox("Layer to shape", names, key="shape_unit")
-    axis = 0 if b.radio("Sections run along", ("x", "y"), horizontal=True,
-                        key="shape_axis") == "x" else 1
-    index = names.index(unit_name)
+    axis = 0 if st.radio("Sections run along", ("x", "y"), horizontal=True,
+                         key="shape_axis") == "x" else 1
     other = 1 - axis
     lo, hi = grid.bounds[other]
+    shapes = _shapes()
+    existing = sorted({float(section["at"])
+                       for profile in shapes.values()
+                       for section in profile_sections(profile)
+                       if section.get("at") is not None
+                       and int(profile.get("axis", 0)) == axis})
 
-    stored = units[index].get("thickness_profile") or {}
-    sections = profile_sections(stored)
-    if stored and int(stored.get("axis", 0)) != axis:
-        st.warning(f"**{unit_name}** is already shaped along "
-                   f"{'x' if stored.get('axis', 0) == 0 else 'y'}. Changing "
-                   f"the axis here replaces that shaping rather than adding "
-                   f"to it.")
-        sections = []
-    for section in sections:
-        if section.get("at") is None:
-            section["at"] = float(0.5 * (lo + hi))
-
-    positions = sorted(float(section["at"]) for section in sections)
-    c, d = st.columns([2, 1])
-    choice = c.selectbox(
-        "Section", [f"{p:,.0f} m" for p in positions] + ["+ new section"],
-        key="shape_section",
-        help=f"Position along {'y' if axis == 0 else 'x'}. Between sections "
-             f"the thickness is interpolated.")
-    if choice == "+ new section":
-        at = float(d.number_input(
-            f"New section at ({'y' if axis == 0 else 'x'}, m)",
-            float(lo), float(hi), float(0.5 * (lo + hi)), float(grid.spacing[other]),
-            key="shape_new_at"))
-    else:
-        at = float(choice.replace(",", "").replace(" m", ""))
-        d.metric("Sections", len(positions))
-
-    current = next((dict(sec) for sec in sections
-                    if abs(float(sec["at"]) - at) < 1e-6), {"at": at, "points": []})
-
-    # The clicks and the table are the same numbers, so they share one state.
-    token = (unit_name, axis, at)
-    if st.session_state.get("shape_token") != token:
-        st.session_state.shape_token = token
-        st.session_state.shape_picks = (
-            section_to_picks(current, layers, index, grid, axis)
-            if current["points"] else [])
-    picks = st.session_state.setdefault("shape_picks", [])
-
-    clicking = st.toggle(
-        "Add knee points by clicking the section", key="shape_clicking",
-        help="Off by default. The review section at the bottom of the page is "
-             "always on screen, so a click there would otherwise land on "
-             "whichever layer and section this step happens to have selected.")
-    st.caption(f"Type depths into the table below, or turn on clicking and "
-               f"place them on the section. Either way they are the same "
-               f"numbers. **{unit_name}** is outlined in the review section; "
-               f"everything else is faded.")
-    edited = st.data_editor(
-        [{"position (m)": float(px), "base depth (m)": float(pz)}
-         for px, pz in picks],
-        num_rows="dynamic", width="stretch", key="shape_table",
-        column_config={
-            "position (m)": st.column_config.NumberColumn(
-                f"{'x' if axis == 0 else 'y'} (m)", step=25.0),
-            "base depth (m)": st.column_config.NumberColumn(
-                "base depth (m)", step=5.0)})
-    typed = [[float(row["position (m)"]), float(row["base depth (m)"])]
-             for row in edited
-             if row.get("position (m)") is not None
-             and row.get("base depth (m)") is not None]
-    if typed != picks:
-        st.session_state.shape_picks = typed
-        picks = typed
-
-    trial = parameters
-    if picks:
-        section = picks_to_section(picks, layers, index, grid, axis, at)
-        merged = [sec for sec in sections
-                  if abs(float(sec["at"]) - at) >= 1e-6] + [section]
-        merged.sort(key=lambda sec: float(sec["at"]))
-        if max((t for sec in merged for _, t in sec["points"]), default=0.0) > 0.0:
-            trial_units = [dict(unit) for unit in units]
-            trial_units[index] = {**trial_units[index],
-                                  "thickness_profile": {"axis": axis,
-                                                        "sections": merged}}
-            trial_units[index].pop("pinch_out", None)
-            trial = {**parameters, "units": trial_units}
+    wells = list(pipe.wells())
+    a, b = st.columns([3, 2])
+    options = [f"{value:,.0f} m" for value in existing] or []
+    options.append("+ new section")
+    picked = a.selectbox("Section", options, key="shape_section")
+    if picked == "+ new section":
+        snap = b.selectbox("Snap to", ["(type a position)"]
+                           + [w.name for w in wells], key="shape_snap")
+        if snap != "(type a position)":
+            at = float([w for w in wells if w.name == snap][0].position[other])
+            b.caption(f"{snap} sits at {at:,.0f} m.")
         else:
-            st.warning("Every knee point is at or above this unit's own top, "
-                       "so it would be absent everywhere. Put at least one "
-                       "below the top.")
+            at = float(b.number_input(
+                f"Position ({'y' if axis == 0 else 'x'}, m)", float(lo), float(hi),
+                float(0.5 * (lo + hi)), float(grid.spacing[other]),
+                key="shape_new_at"))
+    else:
+        at = float(picked.replace(",", "").replace(" m", ""))
+        b.metric("Sections on this axis", len(existing))
+    st.session_state.shape_at = at
+    st.session_state.shape_axis_index = axis
 
-    undo, clear, drop = st.columns(3)
-    if undo.button("Undo last point", disabled=not picks, key="shape_undo"):
-        st.session_state.shape_picks = picks[:-1]
-        st.rerun()
-    if clear.button("Clear this section", disabled=not picks, key="shape_clear"):
-        st.session_state.shape_picks = []
-        st.rerun()
-    if drop.button("Unshape this layer", disabled=not stored, key="shape_drop"):
-        stripped = [dict(unit) for unit in units]
-        stripped[index].pop("thickness_profile", None)
-        st.session_state.shape_picks = []
-        st.session_state.pop("shape_token", None)
-        return {**parameters, "units": stripped}, {}
+    target = st.selectbox(
+        "Clicks move", ["the nearest horizon"] + [f"the base of {n}" for n in names[:-1]],
+        key="shape_target",
+        help="Aim rather than navigate: a click near a horizon moves that "
+             "horizon. Name one instead if the guess keeps going astray.")
+    st.session_state.shape_forced = (
+        None if target == "the nearest horizon"
+        else names.index(target.replace("the base of ", "")))
 
-    if len(positions) > 1:
-        st.caption(f"Shaped on {len(positions)} sections at "
-                   + ", ".join(f"{p:,.0f} m" for p in positions)
-                   + ". Between them the thickness is interpolated; outside "
-                     "them the nearest section is held flat.")
-    return trial, {"highlight": unit_name, "picks": picks,
-                   "placement": bool(clicking), "axis": axis, "at": at}
+    rows = []
+    for index, name in enumerate(names[:-1]):
+        profile = shapes.get(name)
+        for section in profile_sections(profile):
+            if section.get("at") is None or abs(float(section["at"]) - at) > 1e-6:
+                continue
+            for position, thickness in section["points"]:
+                rows.append({"layer": name, "position": float(position),
+                             "thickness": float(thickness)})
+    st.caption(f"Every knee point on this section. Edit a number, delete a "
+               f"row, or click the section to add one.")
+    edited = st.data_editor(
+        rows, num_rows="dynamic", width="stretch", key="shape_points",
+        column_config={
+            "layer": st.column_config.SelectboxColumn(
+                "layer", options=names[:-1], required=True),
+            "position": st.column_config.NumberColumn(
+                f"{'x' if axis == 0 else 'y'} (m)", step=25.0),
+            "thickness": st.column_config.NumberColumn(
+                "thickness (m)", min_value=0.0, step=5.0)})
+
+    rebuilt: dict[str, list] = {}
+    for row in edited:
+        name = row.get("layer")
+        if (name not in names or row.get("position") is None
+                or row.get("thickness") is None):
+            continue
+        rebuilt.setdefault(name, []).append(
+            [float(row["position"]), max(float(row["thickness"]), 0.0)])
+    for name in names[:-1]:
+        profile = dict(shapes.get(name) or {"axis": axis, "sections": []})
+        others = [sec for sec in profile_sections(profile)
+                  if sec.get("at") is not None
+                  and abs(float(sec["at"]) - at) > 1e-6]
+        points = sorted(rebuilt.get(name, []))
+        sections = others + ([{"at": at, "points": points}] if points else [])
+        if sections:
+            shapes[name] = {"axis": axis,
+                            "sections": sorted(sections,
+                                               key=lambda sec: float(sec["at"]))}
+        else:
+            shapes.pop(name, None)
+
+    if st.button("Clear this section", key="shape_clear",
+                 disabled=not rows):
+        for name in list(shapes):
+            kept = [sec for sec in profile_sections(shapes[name])
+                    if sec.get("at") is not None
+                    and abs(float(sec["at"]) - at) > 1e-6]
+            if kept:
+                shapes[name] = {"axis": axis, "sections": kept}
+            else:
+                shapes.pop(name)
+        st.rerun()
+    if existing:
+        st.caption("Shaped on " + ", ".join(f"{v:,.0f} m" for v in existing)
+                   + ". Between sections the thickness is interpolated; "
+                     "outside them the nearest is held flat.")
+    return {"axis": axis, "at": at}
 
 
 def _structure_editor(pipe, geology) -> None:
-    """Build the earth, in steps, without editing YAML.
+    """Build the earth, with the views kept on screen while you do it.
 
-    Everything about the model's shape - which template, how many layers, how
-    thick, what dips, what pinches out, where the faults run - lived only in
-    the configuration file. The page could show you the model and let you
-    retouch one layer's petrophysics, but not change the model.
+    The controls existed; what was missing was seeing the thing being built.
+    The editor drew one section through the model centre while the app's own
+    three-panel viewer and its 3D scene sat on other pages. So the views are
+    a column of their own now - a section along the line being edited, and a
+    map of the layer's thickness with the section lines, wells and fault
+    traces on it - and they are there whichever step is open.
     """
     cfg = config()
     grid = pipe.domains.geology
     extent = grid.extent
-    st.subheader("Build the model")
-    names = list(TEMPLATES)
     current = cfg.geology.template
-    chosen = st.selectbox(
-        "Starting point", names,
-        index=names.index(current) if current in names else 0,
-        key="geo_template",
-        help="`layer_cake` is the general one: as many layers as you like, "
-             "each with its own thickness, shape and pinchout. The rest are "
-             "ready-made structures with their own parameters.")
-    st.caption(f"Model extent {extent[0]:,.0f} × {extent[1]:,.0f} × "
-               f"{extent[2]:,.0f} m on a {grid.dx:,.0f} × {grid.dy:,.0f} × "
-               f"{grid.dz:,.0f} m cell, from the Domains settings.")
+    chosen = _template_gallery(current)
+    if chosen != current:
+        cfg.geology.template = chosen
+        cfg.geology.parameters = {}
+        st.session_state.pop("geo_shapes", None)
+        invalidate()
+        st.rerun()
 
     parameters = dict(cfg.geology.parameters or {})
-    if chosen != current:
-        parameters = {}          # a different template, not the old one's dials
     parameters.setdefault("extent", [float(v) for v in extent])
+    if "geo_shapes" not in st.session_state:
+        _seed_shapes(parameters)
     cake = chosen == "layer_cake"
+    if cake and not parameters.get("units"):
+        # Spell the default cake out the moment it is chosen. Leaving it
+        # implicit meant the layers existed in the built model but not in the
+        # parameters, so any step that works from the parameters - shaping
+        # especially - saw a stack with nothing in it until step 1 had been
+        # opened once.
+        parameters["units"] = [dict(unit) for unit in DEFAULT_UNITS]
 
-    steps = st.tabs(["1 · Layers", "2 · Structure", "3 · Shape",
-                     "4 · Faults"])
-    with steps[0]:
-        if cake:
-            parameters = _layer_table(parameters, extent)
-        else:
-            parameters = _template_parameters(chosen, parameters, extent)
-            parameters["extent"] = [float(v) for v in extent]
-            st.caption("This is a ready-made structure. Switch to "
-                       "`layer_cake` above to set the layers yourself.")
-    with steps[1]:
-        if cake:
-            parameters = _structure_controls(parameters)
-        else:
-            st.caption("The structure is part of this template — its own "
-                       "parameters are in step 1.")
+    controls, views = st.columns([0.46, 0.54], gap="medium")
+    with controls:
+        step = st.radio(
+            "Step", ["1 · Layers", "2 · Structure", "3 · Shape", "4 · Faults"],
+            horizontal=True, key="geo_step",
+            label_visibility="collapsed")
+        st.caption(f"Model {extent[0]:,.0f} × {extent[1]:,.0f} × "
+                   f"{extent[2]:,.0f} m on a {grid.dx:,.0f} × {grid.dy:,.0f} × "
+                   f"{grid.dz:,.0f} m cell.")
 
+        if step.startswith("1"):
+            parameters = (_layer_table(parameters, extent) if cake
+                          else _template_parameters(chosen, parameters, extent))
+            if not cake:
+                parameters["extent"] = [float(v) for v in extent]
+                st.caption("A ready-made structure. Pick `layer_cake` above "
+                           "to set the layers yourself.")
+        elif step.startswith("2"):
+            if cake:
+                parameters = _structure_controls(parameters, extent)
+            else:
+                st.caption("The structure is part of this template — its "
+                           "parameters are in step 1.")
+        elif step.startswith("3") and cake:
+            parameters = _merge_shapes(parameters)
+        elif step.startswith("3"):
+            st.info("Shaping a layer with knee points needs `layer_cake`.")
+
+    if cake:
+        parameters = _merge_shapes(parameters)
     try:
         layers, faults = template(chosen, **parameters)
     except Sim3DError as exc:
         st.error(str(exc))
         return
 
-    preview: dict = {}
-    with steps[2]:
-        if cake:
-            # The shaping needs the tops of the layers ABOVE the one being
-            # shaped, which do not depend on its own thickness - so the stack
-            # built a moment ago is what the knee points convert against, and
-            # it is rebuilt afterwards to show the result.
-            parameters, preview = _shape_editor(pipe, parameters, layers)
+    shaping: dict = {}
+    with controls:
+        if step.startswith("3") and cake:
+            shaping = _shape_editor(pipe, parameters, layers, faults)
+            parameters = _merge_shapes(parameters)
             try:
                 layers, faults = template(chosen, **parameters)
             except Sim3DError as exc:
                 st.error(str(exc))
                 return
-        else:
-            st.info("Shaping a layer with knee points needs `layer_cake`.")
-    with steps[3]:
-        _fault_editor(pipe, geology)
+        elif step.startswith("4"):
+            _fault_editor(pipe, geology, layers)
 
-    st.markdown("**5 · Review and apply**")
-    drawing = bool(preview.get("placement"))
-    figure = ui.stratigraphy_figure(
-        layers, grid, axis=int(preview.get("axis", 0)), at=preview.get("at"),
-        title=_section_title(preview, grid), wells=pipe.wells(),
-        highlight=preview.get("highlight"), picks=preview.get("picks"),
-        placement=drawing)
-    event = st.plotly_chart(
-        figure, width="stretch", key="strat_section",
-        on_select="rerun" if drawing else "ignore", selection_mode="points")
-    if drawing and event and event.get("selection", {}).get("points"):
-        point = event["selection"]["points"][-1]
-        clicked = [float(point["x"]), float(point["y"])]
-        picks = st.session_state.setdefault("shape_picks", [])
-        if not picks or clicked != picks[-1]:
-            picks.append(clicked)
-            st.rerun()
+    axis = int(shaping.get("axis", st.session_state.get("shape_axis_index", 0)))
+    at = shaping.get("at", st.session_state.get("shape_at"))
+    drawing = bool(shaping)
+    focus = _focus_layer(layers)
 
-    if len(faults):
-        st.caption(f"The section shows the stratigraphy before faulting. "
-                   f"{len(faults)} fault(s) displace it; the offset is in the "
-                   f"property volumes above.")
+    with views:
+        figure = ui.stratigraphy_figure(
+            layers, grid, axis=axis, at=at, faults=faults,
+            title=_section_title({"axis": axis, "at": at}, grid),
+            wells=pipe.wells(), highlight=focus, placement=drawing, height=380)
+        event = st.plotly_chart(
+            figure, width="stretch", key="strat_section",
+            on_select="rerun" if drawing else "ignore", selection_mode="points")
+        if drawing and event and event.get("selection", {}).get("points"):
+            _add_knee_point(event, layers, grid, axis, at)
+
+        sections = sorted({float(section["at"])
+                           for profile in _shapes().values()
+                           for section in profile_sections(profile)
+                           if section.get("at") is not None
+                           and int(profile.get("axis", 0)) == axis})
+        names = [layer.name for layer in layers]
+        shown = st.selectbox(
+            "Thickness map of", names,
+            index=names.index(focus) if focus in names else 0,
+            key="view_layer",
+            help="The isopach is the view a section cannot give you: whether "
+                 "this layer varies, and where.")
+        st.plotly_chart(
+            ui.isopach_figure(_thickness_of(layers, grid, shown), grid,
+                              title=f"{shown} thickness", sections=sections,
+                              axis=axis, wells=pipe.wells(), faults=faults,
+                              height=360),
+            width="stretch")
+        if step.startswith("1") and cake:
+            st.plotly_chart(ui.layer_stack_figure(layers, grid, highlight=focus,
+                                                  height=360),
+                            width="stretch")
+        if step.startswith("4") and not len(faults):
+            st.info("No faults yet. Turn on **Draw a fault** and click two "
+                    "points on the map for the ends of its trace; the "
+                    "down-dip section appears here once there is one.")
+        if step.startswith("4") and len(faults):
+            picked = st.session_state.get("fault_view")
+            fault = next((f for f in faults if f.name == picked), list(faults)[0])
+            st.plotly_chart(
+                ui.fault_section_figure(fault, layers, grid, height=380),
+                width="stretch")
+
     for note in _stratigraphy_warnings(layers, grid, cfg.source.frequency):
         st.warning(note)
 
@@ -792,19 +887,98 @@ def _structure_editor(pipe, geology) -> None:
     apply, revert = st.columns(2)
     if apply.button("Apply to the model", type="primary", disabled=not changed,
                     key="geo_apply"):
-        cfg.geology.template = chosen
         cfg.geology.parameters = parameters
-        for key in ("shape_picks", "shape_token"):
-            st.session_state.pop(key, None)
         invalidate()
         st.rerun()
     if revert.button("Discard changes", disabled=not changed, key="geo_revert"):
-        for key in ("shape_picks", "shape_token"):
-            st.session_state.pop(key, None)
+        _seed_shapes(dict(cfg.geology.parameters or {}))
         st.rerun()
     if changed:
-        st.caption("The section above is the edit; the volumes are still the "
-                   "applied model.")
+        st.caption("The views above are the edit; the volumes below are still "
+                   "the applied model.")
+
+
+def _focus_layer(layers) -> str | None:
+    """The layer the views highlight: whichever the editor is pointed at."""
+    names = [layer.name for layer in layers]
+    forced = st.session_state.get("shape_forced")
+    if forced is not None and forced < len(names):
+        return names[forced]
+    # `Layer.is_reservoir` is the override and is None unless someone set it,
+    # so testing it directly made every template's reservoir invisible and
+    # pointed the isopach at whatever happened to be on top.
+    reservoir = [layer.name for layer in layers
+                 if (layer.resolved_facies().is_reservoir
+                     if layer.is_reservoir is None else layer.is_reservoir)]
+    return reservoir[0] if reservoir else (names[0] if names else None)
+
+
+def _thickness_of(layers, grid, name: str | None):
+    """One layer's thickness map, from the horizon surfaces alone."""
+    import numpy as np
+
+    names = [layer.name for layer in layers]
+    if name not in names:
+        return np.zeros((grid.nx, grid.ny))
+    index = names.index(name)
+    top = layers[index].top.on_grid(grid)
+    if index + 1 < len(layers):
+        return layers[index + 1].top.on_grid(grid) - top
+    return (grid.origin[2] + grid.extent[2]) - top
+
+
+def _merge_shapes(parameters: dict) -> dict:
+    """Put the knee-point profiles back onto the units they belong to.
+
+    A configuration with no units of its own is left that way. Writing an
+    empty list instead is not the same thing: the template reads a missing
+    `units` as "use the default cake" and an empty one as a stack with no
+    layers in it, which it refuses - so switching template and landing on
+    step 3 before step 1 blew up with "a layer cake needs at least one unit".
+    """
+    if not parameters.get("units"):
+        return dict(parameters)
+    shapes = _shapes()
+    units = []
+    for unit in (parameters.get("units") or []):
+        entry = dict(unit)
+        profile = shapes.get(entry.get("name"))
+        if profile:
+            entry["thickness_profile"] = profile
+            entry.pop("pinch_out", None)
+        else:
+            entry.pop("thickness_profile", None)
+        units.append(entry)
+    return {**parameters, "units": units}
+
+
+def _add_knee_point(event, layers, grid, axis: int, at) -> None:
+    """A click on the section becomes a knee point on whichever horizon it hit."""
+    point = event["selection"]["points"][-1]
+    position, depth = float(point["x"]), float(point["y"])
+    names = [layer.name for layer in layers]
+    if len(names) < 2:
+        return
+    forced = st.session_state.get("shape_forced")
+    index = (forced if forced is not None
+             else nearest_horizon(layers, grid, axis, at, position, depth))
+    name = names[index]
+    section = picks_to_section([[position, depth]], layers, index, grid, axis, at)
+    shapes = _shapes()
+    profile = dict(shapes.get(name) or {"axis": axis, "sections": []})
+    sections = [dict(sec) for sec in profile_sections(profile)
+                if sec.get("at") is not None]
+    here = next((sec for sec in sections
+                 if abs(float(sec["at"]) - float(at)) < 1e-6), None)
+    if here is None:
+        sections.append(section)
+    else:
+        points = [p for p in here["points"]
+                  if abs(float(p[0]) - position) > 1e-6]
+        here["points"] = sorted(points + section["points"])
+    shapes[name] = {"axis": axis,
+                    "sections": sorted(sections, key=lambda sec: float(sec["at"]))}
+    st.rerun()
 
 
 def _section_title(preview: dict, grid) -> str:
@@ -815,7 +989,7 @@ def _section_title(preview: dict, grid) -> str:
     return f"Section at {'y' if axis == 0 else 'x'} = {float(at):,.0f} m"
 
 
-def _structure_controls(parameters: dict) -> dict:
+def _structure_controls(parameters: dict, extent) -> dict:
     """Step 2: the one structure the whole package carries.
 
     One structure for all of it, deliberately. Deforming a single horizon and
@@ -850,7 +1024,11 @@ def _structure_controls(parameters: dict) -> dict:
             float(structure.get("azimuth", 0.0)), 5.0, key="cake_fold_az")
     else:
         c.caption("Flat layering — no relief.")
-    return {**parameters, "datum": float(datum), "structure": new_structure}
+    out = {**parameters, "datum": float(datum), "structure": new_structure}
+    # The angle is what is chosen; the relief is what is meant. Nobody works
+    # out six degrees over three kilometres in their head.
+    st.info(structure_summary(new_structure, extent, float(datum))["text"])
+    return out
 
 
 def _layer_table(parameters: dict, extent) -> dict:
@@ -862,9 +1040,14 @@ def _layer_table(parameters: dict, extent) -> dict:
                "away from the centre with **from** and **to** as the two "
                "radii. For anything more particular, shape it in step 3.")
     rows = _units_to_rows(list(parameters.get("units") or DEFAULT_UNITS))
+    detail = st.toggle("Show pinchout and petrophysics columns",
+                       key="cake_detail",
+                       help="Four columns cover most models. The rest are "
+                            "here when a layer needs them, and step 3 covers "
+                            "anything a parametric pinchout cannot say.")
     edited = st.data_editor(
         rows, num_rows="dynamic", width="stretch", key="cake_units",
-        column_order=_UNIT_COLUMNS,
+        column_order=_UNIT_COLUMNS if detail else _UNIT_COLUMNS[:4],
         column_config={
             "name": st.column_config.TextColumn("name", required=True),
             "facies": st.column_config.SelectboxColumn(
@@ -889,6 +1072,13 @@ def _layer_table(parameters: dict, extent) -> dict:
         })
     units = _carry_shaping(_rows_to_units(edited, extent),
                            parameters.get("units") or [])
+    # A layer renamed in the table takes its shaping with it only if the
+    # name still matches; drop the orphans so a stale profile cannot
+    # reattach itself to a different layer later.
+    live = {unit["name"] for unit in units}
+    shapes = _shapes()
+    for name in [key for key in shapes if key not in live]:
+        shapes.pop(name)
     return {**parameters, "extent": [float(v) for v in extent],
             "units": units}
 
@@ -1033,7 +1223,7 @@ def _add_fault_layer(figure, faults, grid, path) -> None:
             hovertemplate="%{x:,.0f} m, %{y:,.0f} m<extra></extra>"))
 
 
-def _fault_editor(pipe, geology) -> None:
+def _fault_editor(pipe, geology, layers=None) -> None:
     """Draw a fault trace on the map and give it a plane.
 
     Faults reached the model only through the `fault_compartment` template,
@@ -1134,6 +1324,17 @@ def _fault_editor(pipe, geology) -> None:
         if clear.button("Clear trace", disabled=not path, key="fault_clear"):
             st.session_state.fault_path = []
             st.rerun()
+
+    built = list(getattr(geology, "faults", []) or [])
+    if built:
+        picked = st.selectbox(
+            "Show down-dip section for", [f.name for f in built],
+            key="fault_view",
+            help="The trace is drawn in map view; this is the plane it "
+                 "extrudes to, at its true dip, through the layers it "
+                 "offsets.")
+        st.caption(f"{picked}: the red line is the plane, and the layers on "
+                   f"either side of it are already displaced by the throw.")
 
     if specs:
         st.caption("Drawn faults — the template's own are listed above.")

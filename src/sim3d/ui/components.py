@@ -494,10 +494,200 @@ def bar_figure(centres, counts, *, xlabel: str, ylabel: str, width: float | None
     return fig
 
 
+def isopach_figure(thickness, grid, *, title: str = "", height: int = 420,
+                   sections=None, axis: int = 0, wells=None, faults=None,
+                   vmax: float | None = None) -> go.Figure:
+    """One layer's thickness as a map, with everything that sits on it.
+
+    The isopach is the view that answers "does this layer vary, and where",
+    which a single section cannot: a section is one line across a map, and
+    the editor showed only ever one of them. Section lines, wells and fault
+    traces are drawn on it so that the places being edited are places rather
+    than numbers.
+    """
+    import numpy as np
+
+    values = np.asarray(thickness, dtype=float)
+    present = np.where(values > 1e-6, values, np.nan)
+    fig = go.Figure(go.Heatmap(
+        z=present.T, x=grid.axis(0), y=grid.axis(1), zmin=0.0,
+        zmax=float(vmax) if vmax else float(np.nanmax(present) or 1.0),
+        colorscale=theme.SEQUENTIAL,
+        colorbar=dict(title="m", thickness=12, tickfont=dict(color=theme.INK_MUTED)),
+        hovertemplate="x=%{x:,.0f} m<br>y=%{y:,.0f} m<br>"
+                      "%{z:,.0f} m thick<extra></extra>"))
+    if np.any(values <= 1e-6):
+        fig.add_trace(go.Contour(
+            z=np.nan_to_num(values).T, x=grid.axis(0), y=grid.axis(1),
+            contours=dict(start=0.5, end=0.5, size=1, coloring="none"),
+            line=dict(color=theme.INK_PRIMARY, width=2), showscale=False,
+            name="pinchout", hoverinfo="skip"))
+
+    for at in (sections or []):
+        line = dict(color=theme.SERIES[1], width=2, dash="dash")
+        if axis == 0:
+            fig.add_hline(y=float(at), line=line,
+                          annotation_text=f"section {float(at):,.0f} m",
+                          annotation_position="top left",
+                          annotation_font=dict(size=9, color=theme.SERIES[1]))
+        else:
+            fig.add_vline(x=float(at), line=line,
+                          annotation_text=f"section {float(at):,.0f} m",
+                          annotation_position="top right",
+                          annotation_font=dict(size=9, color=theme.SERIES[1]))
+    for fault in (faults or []):
+        strike = fault.strike_vector
+        reach = fault.strike_extent or float(np.hypot(*grid.extent[:2]))
+        fig.add_trace(go.Scatter(
+            x=[fault.origin[0] - reach * strike[0], fault.origin[0] + reach * strike[0]],
+            y=[fault.origin[1] - reach * strike[1], fault.origin[1] + reach * strike[1]],
+            mode="lines", line=dict(color=theme.INK_PRIMARY, width=2.4),
+            name=fault.name, hovertemplate=f"{fault.describe()}<extra></extra>"))
+    for well in (wells or []):
+        fig.add_trace(go.Scatter(
+            x=[well.x], y=[well.y], mode="markers+text", text=[well.name],
+            textposition="top right", textfont=dict(size=10),
+            marker=dict(size=11, symbol="circle",
+                        color=theme.WELL_COLOUR.get(well.role, theme.INK_PRIMARY),
+                        line=dict(color=theme.SURFACE, width=1.5)),
+            name=well.name, showlegend=False,
+            hovertemplate=f"{well.name}<extra></extra>"))
+
+    fig.update_layout(**theme.plotly_layout(
+        title=dict(text=title, font=dict(size=13)), height=height,
+        xaxis_title="x (m)", yaxis_title="y (m)",
+        xaxis=dict(gridcolor=theme.GRIDLINE, linecolor=theme.AXIS),
+        yaxis=dict(gridcolor=theme.GRIDLINE, linecolor=theme.AXIS,
+                   scaleanchor="x", scaleratio=1.0),
+        showlegend=False))
+    return fig
+
+
+def layer_stack_figure(layers, grid, *, highlight: str | None = None,
+                       height: int = 420, title: str = "") -> go.Figure:
+    """The stratigraphy as a column, at true proportions.
+
+    A table gives a 900 m overburden and a 30 m reservoir the same row
+    height, so the stack never looks like itself. This is the same numbers
+    drawn to scale, which is how a layer cake is actually read.
+    """
+    import numpy as np
+
+    tops = [layer.top.on_grid(grid) for layer in layers]
+    base = grid.origin[2] + grid.extent[2]
+    fig = go.Figure()
+    for index, layer in enumerate(layers):
+        upper = float(np.mean(tops[index]))
+        lower = float(np.mean(tops[index + 1])) if index + 1 < len(tops) else base
+        thick = max(lower - upper, 0.0)
+        chosen = highlight is not None and layer.name == highlight
+        fig.add_trace(go.Bar(
+            x=[1.0], y=[thick], base=[upper], orientation="v", width=0.7,
+            marker=dict(
+                color=theme.FACIES_COLOUR.get(layer.facies, theme.FACIES_FALLBACK),
+                line=dict(color=theme.INK_PRIMARY if chosen else theme.SURFACE,
+                          width=2.2 if chosen else 1.0)),
+            opacity=1.0 if chosen or highlight is None else 0.45,
+            name=layer.name, showlegend=False,
+            hovertemplate=(f"<b>{layer.name}</b><br>{layer.facies}"
+                           f"<br>mean thickness {thick:,.0f} m"
+                           f"<br>{upper:,.0f} to {lower:,.0f} m<extra></extra>")))
+        if thick > 0.02 * grid.extent[2]:
+            fig.add_annotation(
+                x=1.0, y=upper + 0.5 * thick, xref="x", yref="y",
+                text=f"{layer.name} · {thick:,.0f} m", showarrow=False,
+                font=dict(size=10, color=theme.INK_PRIMARY))
+    fig.update_layout(**theme.plotly_layout(
+        title=dict(text=title or "Stack, to scale", font=dict(size=13)),
+        height=height, barmode="overlay",
+        xaxis=dict(visible=False, range=[0.5, 1.5]),
+        yaxis=dict(title="depth (m)", autorange="reversed",
+                   gridcolor=theme.GRIDLINE, linecolor=theme.AXIS,
+                   tickfont=dict(color=theme.INK_MUTED))))
+    return fig
+
+
+def fault_section_figure(fault, layers, grid, *, height: int = 420,
+                         title: str = "") -> go.Figure:
+    """A section down the fault's own dip, showing what the trace extrudes to.
+
+    The trace is drawn in map view and the plane it makes is four numbers -
+    dip, throw, how far down it cuts, how wide the zone is - with no picture
+    anywhere. This is that picture: the plane at its true dip through the
+    layers it offsets, with the throw as the offset it actually produces.
+    """
+    import numpy as np
+
+    from ..geology.faults import present_day_depth
+
+    down = fault.dip_vector
+    horizontal = float(np.hypot(down[0], down[1]))
+    if horizontal < 1e-9:                     # a vertical fault has no map trace
+        horizontal = 1e-9
+    reach = 0.5 * float(np.hypot(*grid.extent[:2]))
+    offsets = np.linspace(-reach, reach, 241)
+    xs = fault.origin[0] + offsets * down[0] / horizontal
+    ys = fault.origin[1] + offsets * down[1] / horizontal
+    inside = ((xs >= grid.origin[0]) & (xs <= grid.origin[0] + grid.extent[0])
+              & (ys >= grid.origin[1]) & (ys <= grid.origin[1] + grid.extent[1]))
+    offsets, xs, ys = offsets[inside], xs[inside], ys[inside]
+    base = grid.origin[2] + grid.extent[2]
+
+    tops = [np.asarray(layer.top.depth(xs, ys), dtype=float) for layer in layers]
+    present = [present_day_depth([fault], xs, ys, top) for top in tops]
+
+    fig = go.Figure()
+    for index, layer in enumerate(layers):
+        upper = present[index]
+        lower = (present[index + 1] if index + 1 < len(present)
+                 else np.full_like(upper, base))
+        fig.add_trace(go.Scatter(
+            x=np.concatenate([offsets, offsets[::-1]]),
+            y=np.concatenate([upper, lower[::-1]]),
+            fill="toself", mode="lines",
+            line=dict(color=theme.SURFACE, width=1.0),
+            fillcolor=theme.FACIES_COLOUR.get(layer.facies, theme.FACIES_FALLBACK),
+            name=layer.name,
+            hovertemplate=f"<b>{layer.name}</b><extra></extra>"))
+
+    # The plane itself: depth grows with the tangent of the dip along this
+    # section, which is the one direction where the dip is its true angle.
+    slope = np.tan(np.radians(fault.dip))
+    limit = (reach if fault.dip_extent is None
+             else float(fault.dip_extent) * np.cos(np.radians(fault.dip)))
+    plane = np.linspace(-limit, limit, 2)
+    fig.add_trace(go.Scatter(
+        x=plane, y=fault.origin[2] + plane * slope, mode="lines",
+        line=dict(color=theme.STATUS["FAIL"], width=3.0),
+        name=f"{fault.name} plane",
+        hovertemplate=f"{fault.describe()}<extra></extra>"))
+    if fault.dip_extent is not None:
+        for edge in (-limit, limit):
+            fig.add_vline(x=edge, line=dict(color=theme.INK_MUTED, width=1,
+                                            dash="dot"))
+        fig.add_annotation(
+            x=limit, y=fault.origin[2] + limit * slope, text="cuts no further",
+            showarrow=True, arrowhead=2, font=dict(size=9, color=theme.INK_MUTED))
+
+    kind = "normal — hanging wall down" if fault.throw > 0 else (
+        "reverse — hanging wall up" if fault.throw < 0 else "no slip")
+    fig.update_layout(**theme.plotly_layout(
+        title=dict(text=title or f"{fault.name}: down-dip section · "
+                                 f"{fault.dip:g}° dip, {abs(fault.throw):g} m "
+                                 f"throw, {kind}", font=dict(size=13)),
+        height=height, xaxis_title="distance along dip from the trace (m)",
+        yaxis_title="depth (m)",
+        xaxis=dict(gridcolor=theme.GRIDLINE, linecolor=theme.AXIS),
+        yaxis=dict(autorange="reversed", gridcolor=theme.GRIDLINE,
+                   linecolor=theme.AXIS, tickfont=dict(color=theme.INK_MUTED)),
+        showlegend=False))
+    return fig
+
+
 def stratigraphy_figure(layers, grid, *, axis: int = 0, at: float | None = None,
                         title: str = "", height: int = 420, wells=None,
                         highlight: str | None = None, picks=None,
-                        placement: bool = False) -> go.Figure:
+                        placement: bool = False, faults=None) -> go.Figure:
     """The layer stack as filled bands down one section line.
 
     Evaluates the horizon surfaces directly rather than the built property
@@ -517,6 +707,16 @@ def stratigraphy_figure(layers, grid, *, axis: int = 0, at: float | None = None,
     for layer in layers:
         surface = layer.top.on_grid(grid)
         tops.append(surface[:, index] if axis == 0 else surface[index, :])
+    if faults is not None and len(faults):
+        # Horizons are defined before faulting, so drawing them straight would
+        # show the layering without its offsets. Inverting the restoration is
+        # a bisection, not an approximation - see `present_day_depth`.
+        from ..geology.faults import present_day_depth
+
+        line_x = along if axis == 0 else np.full_like(along, fixed[index])
+        line_y = np.full_like(along, fixed[index]) if axis == 0 else along
+        tops = [present_day_depth(list(faults), line_x, line_y, top)
+                for top in tops]
     base = grid.origin[2] + grid.extent[2]
 
     fig = go.Figure()

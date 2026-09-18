@@ -297,17 +297,32 @@ against a measured throughput.
 
 ## Building the earth
 
-The **Geology** page is a numbered sequence. Each step writes into the same
-configuration, a section redraws under all of them, and one **Apply** at the
-bottom commits the lot.
+The **Geology** page is a step selector beside a column of views. The steps
+change what you are editing; the views never go away.
+
+![The geology editor](docs/gui-geology-shape.png)
 
 | step | what you set |
 |---|---|
-| **1 · Layers** | how many, and what each one is — name, facies, thickness, reservoir flag, porosity / Vsh / NTG |
-| **2 · Structure** | datum, and the one structure the whole package carries: flat, dipping (dip + azimuth), anticline or syncline |
-| **3 · Shape** | knee points for one layer's thickness, section by section, interpolated between |
-| **4 · Faults** | draw the trace, set dip, throw, transmissibility |
-| **5 · Review and apply** | the section, the warnings, and the commit |
+| **Starting point** | one of ten templates, chosen by what it is rather than by its name. Folds away once picked. |
+| **1 · Layers** | how many, and what each one is — name, facies, thickness, reservoir flag. Pinchout and petrophysics columns are behind a toggle. |
+| **2 · Structure** | datum, and the one structure the whole package carries — and **what that dip actually does**: "6° towards 90° = 315 m of relief across 3,000 m". |
+| **3 · Shape** | knee points on a section, for every horizon on it. No layer dropdown: a click lands on whichever horizon is nearest. |
+| **4 · Faults** | draw the trace on the map; see the plane it extrudes to, at its true dip, in a down-dip section. |
+
+The views, always on screen:
+
+- **the section** along the line being edited, with the layer in focus
+  outlined — and horizons drawn **after** faulting, by inverting the
+  restoration rather than approximating it
+- **the isopach** of any layer, with the section lines, the wells and the
+  fault traces on it, and the pinchout edge contoured. This is the view a
+  section cannot give you: whether a layer varies, and where.
+- **the stack**, at true proportions, in step 1 — because a table gives a
+  900 m overburden and a 30 m reservoir the same row height
+- **the down-dip fault section** in step 4
+
+![Structure step](docs/gui-geology-structure.png)
 
 
 

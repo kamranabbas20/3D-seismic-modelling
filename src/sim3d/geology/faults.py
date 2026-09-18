@@ -144,6 +144,38 @@ class Fault:
                 f"{self.dip:g} deg, throw {abs(self.throw):g} m, {seal}")
 
 
+def present_day_depth(faults, x, y, restored, iterations: int = 48):
+    """Where a horizon defined before faulting now sits, after it.
+
+    Horizons are defined on the undeformed stratigraphy and the builder
+    evaluates them at :meth:`FaultSet.restore`, so a horizon *map* in this
+    codebase is a pre-faulting surface: drawing it straight onto a section
+    shows the layering without its offsets.
+
+    ``restore`` is monotone increasing in ``z`` - deeper in, deeper out,
+    whatever the throw - so inverting it is a bisection rather than an
+    approximation.  The bracket is the restored depth plus the most any
+    combination of faults could move it.
+    """
+    restored = np.asarray(restored, dtype=float)
+    faults = list(faults)
+    if not faults:
+        return restored
+    reach = (sum(abs(fault.throw) for fault in faults)
+             + max(fault.zone_width for fault in faults) + 1.0)
+    lo = restored - reach
+    hi = restored + reach
+    for _ in range(iterations):
+        middle = 0.5 * (lo + hi)
+        value = middle
+        for fault in faults:
+            value = fault.restore(x, y, value)
+        shallow = value < restored
+        lo = np.where(shallow, middle, lo)
+        hi = np.where(shallow, hi, middle)
+    return 0.5 * (lo + hi)
+
+
 def fault_from_trace(name: str, trace, depth: float, *, dip: float = 65.0,
                      throw: float = 30.0, dip_extent: float | None = None,
                      zone_width: float = 20.0,

@@ -146,6 +146,19 @@ sections, converting every pick against the model's middle instead of its
 own section turns two bases drawn 70 m below their tops into −70 m and
 +210 m.
 
+### After faulting
+
+Horizons are defined on the undeformed stratigraphy and evaluated at
+`FaultSet.restore`, so a horizon map in this codebase is a *pre-faulting*
+surface: drawing it straight onto a section shows the layering without its
+offsets, by the whole throw.
+
+`restore` is monotone increasing in `z` — deeper in, deeper out, whatever
+the throw — so inverting it is a bisection rather than an approximation.
+`present_day_depth` brackets the restored depth by the most any combination
+of faults could move it and halves 48 times. It agrees with the built model
+to within one grid cell, where the unfaulted surface is out by the throw.
+
 ### Drawn faults
 
 `fault_from_trace` fixes three of the plane's parameters from the two ends
@@ -177,6 +190,10 @@ hanging wall is on.
 | Throw recovered from the built model | 70.0 m against 70 asked for |
 | Reversing the trace | hanging wall swaps, dip stays downward |
 | Sealing fault, transport multiplier on and off the plane | < 0.05 / 1.0 |
+| `present_day_depth` against the built model | within one cell |
+| Dip reported as relief, tan(6°) × 3 km | exact |
+| Click targeting, six depths across three horizons | all correct |
+| The bottom layer as a click target | never chosen |
 
 ## Reservoir flow
 
