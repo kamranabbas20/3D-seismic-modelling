@@ -271,7 +271,71 @@ def _sublayer_modulation(grid, top, base, z_restored, layer: Layer) -> np.ndarra
 #: shape of the model, and editing them from a flat list of scalars would be
 #: a worse interface than writing a template.
 LAYER_OVERRIDES = ("facies", "porosity", "vsh", "ntg", "permeability",
-                   "is_reservoir")
+                   "is_reservoir", "n_sublayers", "sublayer_porosity_range",
+                   "heterogeneity")
+
+#: What one set of heterogeneity controls means, and what it defaults to.
+#: ``std`` colours porosity and ``vsh_std`` shale volume; everything else is
+#: shared, because a layer deposited one way has one correlation structure
+#: and giving the two fields independent geometries invents a rock nobody
+#: described.
+HETEROGENEITY_DEFAULTS = {
+    "std": 0.030, "vsh_std": 0.050,
+    "correlation_major": 650.0, "correlation_minor": 380.0,
+    "correlation_vertical": 18.0, "azimuth": 30.0,
+    "model": "exponential", "seed": 1,
+}
+
+
+def heterogeneity_specs(spec):
+    """Porosity and shale-volume fields from one set of controls.
+
+    ``spec`` is a mapping, or anything falsy to switch heterogeneity off.
+    The two fields share a geometry and differ only in how strongly they
+    vary and in their seed, so that they are correlated realisations of the
+    same depositional fabric rather than two unrelated noises.
+    """
+    if not spec:
+        return None, None
+    unknown = set(spec) - set(HETEROGENEITY_DEFAULTS)
+    if unknown:
+        raise ConfigError(
+            f"unknown heterogeneity key(s) {sorted(unknown)}; the controls are "
+            f"{sorted(HETEROGENEITY_DEFAULTS)}")
+    values = {**HETEROGENEITY_DEFAULTS, **dict(spec)}
+    shared = dict(
+        correlation_major=float(values["correlation_major"]),
+        correlation_minor=float(values["correlation_minor"]),
+        correlation_vertical=float(values["correlation_vertical"]),
+        azimuth=float(values["azimuth"]), model=str(values["model"]))
+    seed = int(values["seed"])
+    return (HeterogeneitySpec(std=float(values["std"]), seed=seed, **shared),
+            HeterogeneitySpec(std=float(values["vsh_std"]), seed=seed + 1,
+                              **shared))
+
+
+def heterogeneity_of(layer) -> dict | None:
+    """One layer's heterogeneity back as controls, for an editor to seed from.
+
+    The inverse of :func:`heterogeneity_specs` for everything a user can
+    set.  ``None`` means the layer carries no correlated field at all, which
+    is a different answer from "carries one with zero variance".
+    """
+    porosity = layer.porosity_heterogeneity
+    if porosity is None and layer.vsh_heterogeneity is None:
+        return None
+    reference = porosity or layer.vsh_heterogeneity
+    return {
+        "std": float(porosity.std) if porosity else 0.0,
+        "vsh_std": (float(layer.vsh_heterogeneity.std)
+                    if layer.vsh_heterogeneity else 0.0),
+        "correlation_major": float(reference.correlation_major),
+        "correlation_minor": float(reference.correlation_minor),
+        "correlation_vertical": float(reference.correlation_vertical),
+        "azimuth": float(reference.azimuth),
+        "model": str(reference.model),
+        "seed": int(reference.seed),
+    }
 
 
 def override_layers(layers: list[Layer], overrides) -> list[Layer]:
@@ -317,6 +381,15 @@ def override_layers(layers: list[Layer], overrides) -> list[Layer]:
                 f"the catalogue has {sorted(FACIES)}")
         layer = by_name[name]
         for key in LAYER_OVERRIDES:
-            if key in entry:
+            if key not in entry:
+                continue
+            if key == "heterogeneity":
+                # One set of controls, two fields. Setting the attribute
+                # straight would put a dictionary where a spec belongs and
+                # fail much later, inside the field generator.
+                porosity, shale = heterogeneity_specs(entry[key])
+                layer.porosity_heterogeneity = porosity
+                layer.vsh_heterogeneity = shale
+            else:
                 setattr(layer, key, entry[key])
     return layers

@@ -376,15 +376,12 @@ def page_geology() -> None:
          "reservoir": bool(geology.reservoir_mask[geology.layer_index == i].any())}
         for i, layer in enumerate(geology.layers)
     ], width="stretch", hide_index=True)
-    with left:
-        _layer_properties(geology)
     right.subheader("Faults")
     right.code(geology.faults.describe(), language="text")
     right.caption("Faults are kinematic: they displace the stratigraphy and "
                   "attenuate transport across the plane. They do not solve for "
                   "stress.")
 
-    _geobody_editor(pipe, geology)
 
 
 #: Columns of the layer-cake editor, in the order they are shown.
@@ -784,7 +781,8 @@ def _structure_editor(pipe, geology) -> None:
     controls, views = st.columns([0.46, 0.54], gap="medium")
     with controls:
         step = st.radio(
-            "Step", ["1 · Layers", "2 · Structure", "3 · Shape", "4 · Faults"],
+            "Step", ["1 · Layers", "2 · Structure", "3 · Shape", "4 · Faults",
+                     "5 · Properties", "6 · Bodies"],
             horizontal=True, key="geo_step",
             label_visibility="collapsed")
         st.caption(f"Model {extent[0]:,.0f} × {extent[1]:,.0f} × "
@@ -829,6 +827,10 @@ def _structure_editor(pipe, geology) -> None:
                 return
         elif step.startswith("4"):
             _fault_editor(pipe, geology, layers)
+        elif step.startswith("5"):
+            _layer_properties(geology)
+        elif step.startswith("6"):
+            _geobody_editor(pipe, geology)
 
     axis = int(shaping.get("axis", st.session_state.get("shape_axis_index", 0)))
     at = shaping.get("at", st.session_state.get("shape_at"))
@@ -1106,6 +1108,75 @@ def layer_overrides() -> list[dict]:
     return config().geology.layers
 
 
+def _heterogeneity_controls(layer, chosen: str):
+    """The correlated field a layer carries, as controls rather than a constant.
+
+    A layer's porosity is never one number here - it is a random field with a
+    standard deviation, a correlation length along a bearing, another across
+    it, and a vertical one. Those four decide whether a flood fingers or
+    advances as a front, so they decide the sweep and through it the 4D. The
+    template set them and nothing could reach them.
+
+    Returns the controls to store, or ``False`` to switch the field off - a
+    different thing from zero variance, which would still cost the field
+    generator its time.
+    """
+    from sim3d.geology.builder import HETEROGENEITY_DEFAULTS, heterogeneity_of
+    from sim3d.geology.heterogeneity import COVARIANCE_MODELS
+
+    current = heterogeneity_of(layer) or {}
+    on = st.checkbox(
+        "Correlated heterogeneity", value=bool(current),
+        key=f"het_on_{chosen}",
+        help="Off makes the layer uniform at its own porosity and Vsh. On "
+             "gives it a random field with the geometry below.")
+    if not on:
+        return False
+
+    seeded = {**HETEROGENEITY_DEFAULTS, **current}
+    a, b, c = st.columns(3)
+    values = {
+        "std": a.number_input(
+            "Porosity variation (σ)", 0.0, 0.25, float(seeded["std"]), 0.005,
+            format="%.3f", key=f"het_std_{chosen}"),
+        "vsh_std": b.number_input(
+            "Vsh variation (σ)", 0.0, 0.5, float(seeded["vsh_std"]), 0.005,
+            format="%.3f", key=f"het_vstd_{chosen}"),
+        "model": c.selectbox(
+            "Covariance", list(COVARIANCE_MODELS),
+            index=list(COVARIANCE_MODELS).index(str(seeded["model"])),
+            key=f"het_model_{chosen}",
+            help="`exponential` is rougher and closer to what logs show; "
+                 "`gaussian` is very smooth."),
+    }
+    d, e, f, g = st.columns(4)
+    values["correlation_major"] = d.number_input(
+        "Range along (m)", 10.0, 20000.0, float(seeded["correlation_major"]),
+        25.0, key=f"het_maj_{chosen}",
+        help="How far a patch persists along its own bearing. Long against "
+             "short is a channelised fabric; equal is patchy.")
+    values["correlation_minor"] = e.number_input(
+        "Range across (m)", 10.0, 20000.0, float(seeded["correlation_minor"]),
+        25.0, key=f"het_min_{chosen}")
+    values["correlation_vertical"] = f.number_input(
+        "Range vertical (m)", 1.0, 2000.0,
+        float(seeded["correlation_vertical"]), 1.0, key=f"het_vert_{chosen}")
+    values["azimuth"] = g.number_input(
+        "Bearing", 0.0, 360.0, float(seeded["azimuth"]), 5.0,
+        key=f"het_az_{chosen}", help="Degrees clockwise from +y.")
+    values["seed"] = int(st.number_input(
+        "Seed", 0, 10_000, int(seeded["seed"]), 1, key=f"het_seed_{chosen}",
+        help="Same seed, same rock. Change it for another realisation of the "
+             "same statistics."))
+
+    ratio = max(values["correlation_major"], values["correlation_minor"]) \
+        / values["correlation_vertical"]
+    st.caption(f"Anisotropy {ratio:,.0f}:1 horizontal to vertical. The "
+               f"correlation lengths should stay well below the model, which "
+               f"is how the spectral method avoids wrapping around.")
+    return values
+
+
 def _layer_properties(geology) -> None:
     """Edit one layer's petrophysics without writing a new template.
 
@@ -1114,7 +1185,9 @@ def _layer_properties(geology) -> None:
     changes the property cube the flow simulation and the rock physics both
     read, so the edit reaches the sweep and the seismic.
     """
-    with st.expander("Petrophysics by layer"):
+    # Open, because this is the whole of its step now rather than an aside
+    # under a page of other things.
+    with st.expander("Petrophysics by layer", expanded=True):
         names = [layer.name for layer in geology.layers]
         chosen = st.selectbox("Layer", names, key="layer_edit")
         layer = next(l for l in geology.layers if l.name == chosen)
@@ -1161,10 +1234,13 @@ def _layer_properties(geology) -> None:
                       else mid(facies.permeability)), 10.0, key=f"k_{chosen}"),
         }
 
+        heterogeneity = _heterogeneity_controls(layer, chosen)
+
         apply, reset = st.columns(2)
         if apply.button("Apply to layer", type="primary", key=f"apply_{chosen}"):
             entry = {"name": chosen, "facies": new_facies,
-                     "is_reservoir": bool(reservoir), **values}
+                     "is_reservoir": bool(reservoir),
+                     "heterogeneity": heterogeneity, **values}
             overrides[:] = [o for o in overrides if o.get("name") != chosen]
             overrides.append(entry)
             invalidate()

@@ -14,7 +14,7 @@ import numpy as np
 
 from ..core.errors import ConfigError
 from ..core.geometry import bearing_vector
-from .builder import Layer
+from .builder import Layer, heterogeneity_specs
 from .faults import Fault, FaultSet
 from .heterogeneity import HeterogeneitySpec
 from .facies import get_facies
@@ -453,8 +453,10 @@ def layer_cake(extent=(3000.0, 3000.0, 2200.0), datum=0.0, units=None,
     ``units`` is a dictionary with a ``name``, a ``facies`` and a
     ``thickness``, plus anything a
     :class:`~sim3d.geology.builder.Layer` accepts - ``porosity``, ``vsh``,
-    ``ntg``, ``permeability``, ``is_reservoir``, ``n_sublayers`` - and an
-    optional ``pinch_out``.
+    ``ntg``, ``permeability``, ``is_reservoir``, ``n_sublayers`` - an
+    optional ``pinch_out``, and an optional ``heterogeneity`` giving the
+    correlated field its own controls instead of the default a reservoir
+    unit would otherwise get.
 
     Horizons are built by *accumulating thickness* rather than by naming
     depths:
@@ -521,7 +523,14 @@ def layer_cake(extent=(3000.0, 3000.0, 2200.0), datum=0.0, units=None,
                          0.035 if heterogeneous else 0.0)),
             is_reservoir=explicit if explicit is None else bool(explicit),
         )
-        if heterogeneous:
+        spec = unit.get("heterogeneity")
+        if spec is not None:
+            # Spelled out on the unit, so it wins over the default the
+            # reservoir flag would otherwise pick - including `false`, which
+            # is how a reservoir layer is made uniform.
+            layer.porosity_heterogeneity, layer.vsh_heterogeneity = \
+                heterogeneity_specs(spec)
+        elif heterogeneous:
             layer.porosity_heterogeneity = _heterogeneity(seed + 10 * index, 0)
             layer.vsh_heterogeneity = _heterogeneity(seed + 10 * index, 1)
         layers.append(layer)

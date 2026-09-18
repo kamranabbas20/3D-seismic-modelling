@@ -484,8 +484,8 @@ def test_the_page_is_a_step_selector_with_the_views_always_up():
     step 5. The steps switch the controls; the views stay."""
     app = _goto(_app(), "Geology")
     step = _widget(app, "radio", "geo_step")
-    assert step.options == ["1 · Layers", "2 · Structure", "3 · Shape",
-                            "4 · Faults"]
+    assert step.options[:4] == ["1 · Layers", "2 · Structure", "3 · Shape",
+                                "4 · Faults"]
     for name in step.options:
         step.set_value(name)
         app.run()
@@ -582,3 +582,49 @@ def test_placing_a_fault_needs_two_clicks_and_reaches_the_configuration():
     assert len(faults) == 1
     assert faults[0]["trace"] == [[600.0, 400.0], [2400.0, 2600.0]]
     assert app.session_state["fault_path"] == [], "the trace is spent"
+
+
+def test_the_flow_runs_to_six_steps_with_nothing_left_underneath():
+    """Properties and geobodies sat below the page, unnumbered, while the
+    steps promised a sequence and then trailed off."""
+    app = _goto(_app(), "Geology")
+    step = _widget(app, "radio", "geo_step")
+    assert step.options == ["1 · Layers", "2 · Structure", "3 · Shape",
+                            "4 · Faults", "5 · Properties", "6 · Bodies"]
+    for name in ("5 · Properties", "6 · Bodies"):
+        step.set_value(name)
+        app.run()
+        assert not app.exception, f"{name} raised"
+
+
+def test_step_five_reaches_the_heterogeneity_the_template_fixed():
+    """Correlation lengths and variance decide whether a flood fingers or
+    fronts, and nothing could reach them."""
+    app = _goto(_app(), "Geology")
+    _widget(app, "radio", "geo_step").set_value("5 · Properties")
+    app.run()
+    layer = _widget(app, "selectbox", "layer_edit").value
+    switch = _widget(app, "checkbox", f"het_on_{layer}")
+    if not switch.value:
+        switch.set_value(True)
+        app.run()
+    for suffix in ("std", "vstd", "maj", "min", "vert", "az", "seed"):
+        assert _widget(app, "number_input", f"het_{suffix}_{layer}") is not None
+    assert _widget(app, "selectbox", f"het_model_{layer}").options == [
+        "gaussian", "exponential", "spherical"]
+
+
+def test_switching_heterogeneity_off_reaches_the_configuration():
+    app = _goto(_app(), "Geology")
+    _widget(app, "radio", "geo_step").set_value("5 · Properties")
+    app.run()
+    layer = _widget(app, "selectbox", "layer_edit").value
+    _widget(app, "checkbox", f"het_on_{layer}").set_value(False)
+    app.run()
+    _widget(app, "button", f"apply_{layer}").click()
+    app.run()
+    assert not app.exception
+    overrides = app.session_state["config"].geology.layers
+    entry = next(o for o in overrides if o["name"] == layer)
+    assert entry["heterogeneity"] is False, (
+        "off is uniform, not a field of zero variance")

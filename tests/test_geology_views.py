@@ -170,3 +170,107 @@ def test_the_section_shows_horizons_after_faulting_when_asked():
         next(t for t in fig.data if t.name.startswith("reservoir")).y, dtype=float)
     assert np.nanmax(band(faulted)) - np.nanmax(band(plain)) == \
         pytest.approx(90.0, abs=2.0)
+
+
+# ------------------------------------------------------ heterogeneity
+def test_heterogeneity_controls_reach_the_built_model():
+    """The four numbers that decide whether a flood fingers or fronts.
+
+    A layer's porosity is a random field, and its correlation lengths and
+    variance are what set the sweep. The template fixed them and nothing -
+    configuration or interface - could reach them.
+    """
+    from sim3d.geology.builder import build_geology, override_layers
+
+    units = [{"name": "over", "facies": "shale", "thickness": 900.0},
+             {"name": "res", "facies": "clean_sandstone", "thickness": 200.0,
+              "is_reservoir": True, "sublayer_porosity_range": 0.0},
+             {"name": "under", "facies": "shale", "thickness": 400.0}]
+
+    def spread(spec):
+        layers, _ = layer_cake(extent=EXTENT, units=units)
+        if spec is not _MISSING:
+            override_layers(layers, [{"name": "res", "heterogeneity": spec}])
+        model = build_geology(grid(dz=20.0), layers)
+        return float(model.porosity[model.reservoir_mask].std())
+
+    default = spread(_MISSING)
+    assert default == pytest.approx(0.030, abs=0.006)
+    assert spread({"std": 0.07}) == pytest.approx(0.070, abs=0.012)
+    assert spread(False) == pytest.approx(0.0, abs=1e-9), (
+        "off is uniform, which is not the same as a field of zero variance")
+
+
+_MISSING = object()
+
+
+def test_a_unit_can_carry_its_own_heterogeneity():
+    """Spelled out on the unit, it beats the default the reservoir flag picks."""
+    from sim3d.geology.builder import build_geology
+
+    def spread(**extra):
+        layers, _ = layer_cake(extent=EXTENT, units=[
+            {"name": "over", "facies": "shale", "thickness": 900.0},
+            {"name": "res", "facies": "clean_sandstone", "thickness": 200.0,
+             "is_reservoir": True, "sublayer_porosity_range": 0.0, **extra},
+            {"name": "under", "facies": "shale", "thickness": 400.0}])
+        model = build_geology(grid(dz=20.0), layers)
+        return float(model.porosity[model.reservoir_mask].std())
+
+    assert spread(heterogeneity={"std": 0.07}) > spread() + 0.02
+    assert spread(heterogeneity=False) == pytest.approx(0.0, abs=1e-9)
+
+
+def test_the_correlation_geometry_actually_changes_the_fabric():
+    """Long-against-short is a channelised rock; equal is patchy. If the
+    ranges did not reach the field, both would look the same."""
+    from sim3d.geology.builder import build_geology
+
+    def fabric(major, minor):
+        layers, _ = layer_cake(extent=EXTENT, units=[
+            {"name": "over", "facies": "shale", "thickness": 900.0},
+            {"name": "res", "facies": "clean_sandstone", "thickness": 200.0,
+             "is_reservoir": True, "sublayer_porosity_range": 0.0,
+             "heterogeneity": {"std": 0.05, "azimuth": 90.0, "seed": 3,
+                               "correlation_major": major,
+                               "correlation_minor": minor}},
+            {"name": "under", "facies": "shale", "thickness": 400.0}])
+        model = build_geology(grid(dz=20.0), layers)
+        phi = np.where(model.reservoir_mask, model.porosity, np.nan)
+        plane = np.nanmean(phi, axis=2)
+        # Roughness along x against along y: a fabric elongated along x is
+        # smoother along x than across it.
+        return (float(np.nanmean(np.abs(np.diff(plane, axis=0))))
+                / float(np.nanmean(np.abs(np.diff(plane, axis=1)))))
+
+    elongated = fabric(1200.0, 120.0)
+    isotropic = fabric(400.0, 400.0)
+    assert elongated < 0.75 * isotropic, (
+        f"elongated {elongated:.3f} vs isotropic {isotropic:.3f}")
+
+
+def test_heterogeneity_reads_back_as_the_controls_that_made_it():
+    """So an editor can seed from what a layer already carries."""
+    from sim3d.geology.builder import heterogeneity_of, heterogeneity_specs
+
+    asked = {"std": 0.044, "vsh_std": 0.066, "correlation_major": 210.0,
+             "correlation_minor": 130.0, "correlation_vertical": 9.0,
+             "azimuth": 75.0, "model": "spherical", "seed": 12}
+    layers, _ = layer_cake(extent=EXTENT, units=[
+        {"name": "a", "facies": "shale", "thickness": 900.0,
+         "heterogeneity": asked},
+        {"name": "b", "facies": "shale", "thickness": 400.0}])
+    assert heterogeneity_of(layers[0]) == asked
+    assert heterogeneity_of(layers[1]) is None, "no field is not an empty field"
+
+    porosity, shale = heterogeneity_specs(asked)
+    assert porosity.seed + 1 == shale.seed, (
+        "correlated realisations of one fabric, not two unrelated noises")
+    assert porosity.correlation_major == shale.correlation_major
+
+
+def test_an_unknown_heterogeneity_control_is_refused():
+    from sim3d.geology.builder import heterogeneity_specs
+
+    with pytest.raises(ConfigError):
+        heterogeneity_specs({"std": 0.03, "correlation_lenght": 400.0})

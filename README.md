@@ -309,6 +309,8 @@ change what you are editing; the views never go away.
 | **2 · Structure** | datum, and the one structure the whole package carries — and **what that dip actually does**: "6° towards 90° = 315 m of relief across 3,000 m". |
 | **3 · Shape** | knee points on a section, for every horizon on it. No layer dropdown: a click lands on whichever horizon is nearest. |
 | **4 · Faults** | draw the trace on the map; see the plane it extrudes to, at its true dip, in a down-dip section. |
+| **5 · Properties** | per-layer petrophysics, and the **correlated heterogeneity** — variance, correlation length along and across a bearing, vertical range, covariance model, seed. |
+| **6 · Bodies** | channels and lenses drawn on the map and painted into the property cube. |
 
 The views, always on screen:
 
@@ -321,6 +323,41 @@ The views, always on screen:
 - **the stack**, at true proportions, in step 1 — because a table gives a
   900 m overburden and a 30 m reservoir the same row height
 - **the down-dip fault section** in step 4
+
+### Heterogeneity
+
+A layer's porosity is not one number — it is a correlated random field, and
+its variance and correlation lengths are what decide whether a flood fingers
+or advances as a front. Every template set them and **nothing could reach
+them**: they were absent from `LAYER_OVERRIDES`, from the layer table and
+from the interface entirely.
+
+Step 5 exposes them per layer, and a `heterogeneity` block does the same from
+the configuration:
+
+```yaml
+geology:
+  layers:
+    - name: reservoir
+      heterogeneity:
+        std: 0.05              # porosity variation
+        vsh_std: 0.06          # shale-volume variation
+        correlation_major: 1200   # along the bearing — a channelised fabric
+        correlation_minor: 120    # across it
+        correlation_vertical: 12
+        azimuth: 90
+        model: exponential        # or gaussian, spherical
+        seed: 3
+```
+
+The two fields share a geometry and differ only in variance and seed, so
+they are correlated realisations of one depositional fabric rather than two
+unrelated noises. `heterogeneity: false` makes the layer uniform, which is
+not the same as a field of zero variance and costs nothing to generate.
+
+A test checks the geometry actually reaches the rock: a 1200 m / 120 m fabric
+comes out measurably smoother along its bearing than a 400 m / 400 m one, so
+the ranges are not decoration.
 
 ![Structure step](docs/gui-geology-structure.png)
 
