@@ -1,0 +1,154 @@
+# Shale, sand, shale - flat, with one injector and one producer, over three
+# years. The textbook 4D case, configured so that both seismic modes can be
+# run on it and compared: a 1D convolution and a full-wave survey migrated
+# with RTM, on the same earth models.
+#
+# The geometry is set by two lessons this project learned the expensive way:
+#
+#   * The acquisition must stand off from the target. The image within about
+#     a wavelength of any source or receiver is injection near-field, and a
+#     survey sitting half a wavelength above its reservoir puts the target
+#     inside that zone - which is what filled an earlier demo's image with
+#     concentric arcs. Receivers here sit at 800 m and the sand top is at
+#     1,400 m: 600 m, or 2.7 wavelengths at the 12 Hz peak.
+#   * The absorbing layer takes its share first. A 10-node PML at 12 m is
+#     120 m per face, so with the propagation domain starting at 650 m
+#     nothing may sit above 770 m.
+#
+# The 12 m cell is set by dispersion, not by taste: at 15 m the slowest cell
+# in the model sampled the shortest wavelength at 4.65 cells where an
+# 8th-order operator needs 5.25, and QC said so.
+#
+project:
+  name: three_layer_walkthrough
+  description: >
+    Flat shale-sand-shale at 1,400 m, one injector and one producer 600 m
+    apart, three years of flooding, imaged both by 1D convolution and by
+    full-wave modelling with RTM.
+  seed: 1
+
+domains:
+  geology_bounds: [[0, 2000], [0, 2000], [0, 2000]]
+  geology_spacing: [25.0, 25.0, 10.0]
+  # Isotropic 15 m: numerical dispersion is governed by the coarsest axis,
+  # whichever way the geology varies.
+  propagation_bounds: [[450, 1550], [450, 1550], [650, 1850]]
+  propagation_spacing: [12.0, 12.0, 12.0]
+  # The imaging window covers the two wells and the sand between them.
+  target_bounds: [[700, 1300], [700, 1300], [1300, 1600]]
+
+geology:
+  template: three_layer
+  parameters:
+    extent: [2000.0, 2000.0, 2000.0]
+    z_reservoir: 1400.0
+    gross: 100.0
+    dip: 0.0            # flat: the simplest case there is
+    seed: 1
+
+# A stiff frame for the shale, so the shale is harder than the sand and the
+# top of the reservoir is the ordinary negative reflection coefficient.
+# One global soft-sand frame makes the shale slower than the sand and leaves
+# the top of the reservoir with almost no contrast at all.
+rock_physics:
+  dry_frame_model: soft_sand
+  critical_porosity: 0.40
+  coordination: 9.0
+  temperature: 70.0
+  facies:
+    shale:
+      dry_frame_model: stiff_sand
+      critical_porosity: 0.55
+      coordination: 6.0
+
+reservoir:
+  source: flow
+  baseline:
+    sw: 0.25
+    temperature: 70.0
+    pressure_gradient: 10500.0
+    datum_pressure: 101325.0
+
+wells:
+  wells:
+    - name: I1
+      role: injector
+      x: 700.0
+      y: 1000.0
+      completions: [reservoir]
+      control: water_rate
+      # 30,000 STB/day is what it takes to turn over a meaningful fraction of
+      # this sand in three years: 2 km x 2 km x 100 m at 25 % porosity is
+      # 629 million STB, so 3,000 STB/day would sweep half a percent of it and
+      # the 4D difference would be a rounding error. At this rate the flood
+      # reaches the producer and breaks through at 22 % water cut.
+      target: 30000.0
+      # Below the 3,319 psi a 0.7 psi/ft fracture gradient implies at 1,400 m.
+      bhp_limit_psi: 3200.0
+    - name: P1
+      role: producer
+      x: 1300.0
+      y: 1000.0
+      completions: [reservoir]
+      control: liquid_rate
+      target: 30000.0          # STB/day, VRR 1.0
+      bhp_limit_psi: 800.0
+
+simulation:
+  duration_days: 1095.0        # three years
+  report_every_days: 45.625
+  max_timestep_days: 30.0
+  monitor_day: 1095.0
+  swc: 0.25
+  sor: 0.25
+  krw_max: 0.35
+  kro_max: 0.90
+  water_viscosity_cp: 0.45
+  oil_viscosity_cp: 1.2
+  gravity: true
+
+solver:
+  pml_nodes: 10
+  record_length: 1.1
+
+# 12 Hz peak, so Fmax is about 29 Hz. At Vmin = 2,006 m/s that is a 70 m
+# shortest wavelength, sampled at 5.8 cells on the 12 m grid - clear of the
+# 5.25 an 8th-order operator needs. The 100 m sand is 0.44 wavelengths of
+# the peak, so its top and base separate rather than tuning into one event.
+source:
+  type: ricker
+  frequency: 12.0
+
+acquisition:
+  type: OBN
+  receiver_depth: 800.0
+  source_depth: 780.0
+  receiver_spacing: 60.0
+  source_spacing: 200.0
+  source_line_spacing: 200.0
+
+imaging:
+  method: RTM
+  imaging_condition: source_normalized
+  laplacian_filter: true
+
+sim2seis:
+  map_to_depth: true
+  time_shifts: true
+  noise:
+    level: 0.05
+    repeatability: 0.75
+    seed: 7
+
+# Both surveys a 4D image needs, and no more: the pressure/saturation
+# decomposition is what the sim2seis run is for, at a fraction of the cost.
+fourd:
+  scenarios: [baseline, combined]
+
+budget:
+  max_ram_gb: 8.0
+  max_disk_gb: 50.0
+  max_cost_class: HIGH
+
+output:
+  directory: runs

@@ -1,0 +1,128 @@
+# The section 104 demonstration model at research resolution.
+#
+# 3 km x 3 km x 2.2 km of geology, a gentle anticline cut by one normal
+# fault, a 150 m gross reservoir with internal heterogeneity, two injectors
+# and three producers at least 500 m apart, and a sparse OBN survey.
+#
+# This is the scientific target, not a quick run. `sim3d plan` on it will
+# report what it actually costs on the machine in front of you, and
+# `sim3d qc` will say whether the grid honours the bandwidth. If the answer
+# is unaffordable, the alternatives are the ones sim3d prints - lower Fmax,
+# crop the propagation domain further, thin the acquisition - each of which
+# is a scientific decision to be made deliberately, not a default.
+
+project:
+  name: research_standard
+  description: Section 104 demonstration - anticline, one fault, 2 injectors, 3 producers
+  seed: 1
+
+domains:
+  geology_bounds: [[0, 3000], [0, 3000], [0, 2200]]
+  geology_spacing: [25.0, 25.0, 10.0]
+  # A 1.4 x 1.4 x 1.2 km wave-equation experiment inside a 3 km geological
+  # model, with the analysis window a 800 x 800 x 350 m box inside that.
+  # Keeping the geological context large and the active domain as small as
+  # is scientifically reasonable is the guiding principle of section 7.
+  propagation_bounds: [[800, 2200], [800, 2200], [500, 1700]]
+  propagation_spacing: [10.0, 10.0, 10.0]
+  target_bounds: [[1100, 1900], [1100, 1900], [1100, 1450]]
+
+geology:
+  template: fault_compartment
+  parameters:
+    z_reservoir: 1200.0
+    gross: 150.0
+    throw: 45.0
+    transmissibility: 0.0    # a sealing fault: the flood front cannot cross it
+    seed: 1
+
+wells:
+  pattern: demonstration     # 2 injectors, 3 producers, all >= 500 m apart
+  min_spacing: 500.0
+
+reservoir:
+  baseline:
+    sw: 0.30
+    sg: 0.0
+    temperature: 80.0
+    pressure_gradient: 10500.0
+  scenario:
+    name: mature_flood
+    time_state: T4
+    pressure:
+      - {well: I1, delta_p_bar: 40.0, radius: [600.0, 600.0, 150.0]}
+      - {well: I2, delta_p_bar: 35.0, radius: [550.0, 550.0, 150.0]}
+      - {well: P1, delta_p_bar: -50.0, radius: [500.0, 500.0, 150.0]}
+      - {well: P2, delta_p_bar: -30.0, radius: [450.0, 450.0, 150.0]}
+      - {well: P3, delta_p_bar: -40.0, radius: [480.0, 480.0, 150.0]}
+    water_fronts:
+      # The fronts are elongated along the high-permeability direction, so
+      # they are not simply scaled copies of the pressure halos.
+      - {well: I1, target_sw: 0.75, radius: [300.0, 180.0, 90.0], azimuth: 30.0}
+      - {well: I2, target_sw: 0.75, radius: [200.0, 130.0, 90.0], azimuth: 30.0}
+    gas:
+      - {well: P3, target_sg: 0.10, radius: [250.0, 250.0, 80.0]}
+
+rock_physics:
+  mineral_model: vrh
+  dry_frame_model: soft_sand
+  fluid_mixing: wood
+  pressure_model: hertz_mindlin
+  temperature: 80.0
+  salinity: 35000.0
+  api: 30.0
+  gas_gravity: 0.65
+  gor: 100.0
+
+solver:
+  physics: acoustic
+  spatial_order: 8
+  courant_safety: 0.90
+  pml_nodes: 12
+  dtype: float32
+  backend: auto
+  record_length: 2.0
+
+source:
+  type: ricker
+  # 13 Hz, not 20. A Ricker still carries 5% of its peak amplitude near
+  # 2.4 x its peak frequency, so a 20 Hz wavelet needs the grid sampled for
+  # ~48 Hz, which at this Vmin means dx <= 7.4 m - roughly a five-fold cost
+  # increase over the 10 m grid below. Raise this to 20.0 and `sim3d qc`
+  # will fail the dispersion check and `sim3d plan` will refuse the run
+  # rather than quietly under-sampling it. That refusal is the point:
+  # the bandwidth/cost trade is a scientific decision, not a default.
+  frequency: 13.0
+
+acquisition:
+  type: OBN
+  centre: [1500.0, 1500.0]
+  receiver_spacing: 200.0
+  receiver_extent: 1000.0
+  source_spacing: 150.0
+  source_line_spacing: 300.0
+  source_extent: 1000.0
+  # Inside the inner edge of the 12-node (120 m) absorbing layer, which for
+  # this propagation domain is z >= 620 m.
+  receiver_depth: 700.0
+  source_depth: 680.0
+
+imaging:
+  method: RTM
+  imaging_condition: source_normalized
+  laplacian_filter: true
+  # Set velocity_scale to 1.02 or velocity_smoothing to 100.0 to run the
+  # migration-velocity experiments of spec sections 76-78.
+  velocity_scale: 1.0
+  velocity_smoothing: 0.0
+
+fourd:
+  scenarios: [baseline, pressure_only, saturation_only, combined]
+
+budget:
+  max_ram_gb: 16.0
+  max_disk_gb: 400.0
+  max_cost_class: VERY HIGH
+
+output:
+  directory: runs

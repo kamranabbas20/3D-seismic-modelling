@@ -1,0 +1,983 @@
+r"""Two-phase flow simulation (requirement sections 7, 9, 10, 11, 12).
+
+What this is
+------------
+A slightly-compressible, two-phase (water/oil), three-dimensional IMPES
+simulator on the reservoir cells of the geological model:
+
+.. math::
+    \phi c_t \frac{\partial p}{\partial t}
+        = \nabla\!\cdot\!\big(\lambda_t K \nabla \Phi\big) + q_t,
+    \qquad
+    \phi \frac{\partial S_w}{\partial t}
+        + \nabla\!\cdot\!\big(f_w \mathbf{u}_t\big) = q_w
+
+with :math:`\Phi = p - \rho g z` the phase potential, Corey relative
+permeabilities, upstream mobility weighting, harmonic transmissibilities,
+fault transmissibility multipliers on the faces they cut, and Peaceman well
+indices.  Pressure is solved implicitly each step; saturation is advanced
+explicitly under a CFL limit on the saturation change.
+
+What this is not
+----------------
+It is not a black-oil simulator.  There is no free gas *phase*, no PVT
+table, no compositional behaviour, no capillary pressure, no thermal effect
+and no geomechanics.  Water and oil are slightly compressible fluids with
+constant viscosity, and the pressure equation carries a single lumped total
+compressibility.
+
+Optionally it does track dissolved gas.  Setting
+:attr:`FlowSettings.solution_gas` adds the flash in
+:mod:`sim3d.reservoir.gas`, which lets gas come out of solution where the
+pressure falls below the bubble point and produces a gas saturation rather
+than requiring one to be imposed.  The liberated gas does not flow, which
+is a fair approximation below the critical gas saturation and an
+increasingly poor one above it; the simulator says which regime it ended in
+rather than leaving it to be assumed.
+
+That is a deliberate floor rather than an oversight.  The questions this
+platform exists to answer - where the flood front is, how far the pressure
+halo reaches, what the 4D response looks like and whether pressure can be
+told from saturation - are all answered by exactly these two equations, and
+the third effect that changes the seismic materially is gas coming out of
+solution, which is why that one and no other has been added.
+
+Where free gas has to *move* - a gas cap forming, gas coning, a
+solution-gas drive whose GOR history matters - the mechanistic generator in
+:mod:`sim3d.reservoir.mechanistic` remains the instrument: it imposes a gas
+saturation directly, which is the honest way to study a response this
+solver cannot produce.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+
+import numpy as np
+from scipy.sparse import csr_matrix, diags
+from scipy.sparse.linalg import LinearOperator, cg, spsolve
+
+from ..core.errors import ConfigError, ValidationError
+from ..core.units import DAY, STB, pa_to_psi, si_to_stb_per_day
+from ..wells.completion import resolve_completions
+from ..wells.controls import WELLBORE_RADIUS, ControlMode, WellControl
+from .gas import SolutionGas
+from .relperm import CoreyRelativePermeability
+from .state import ReservoirState
+
+GRAVITY = 9.81
+
+
+def _scatter_add(target: np.ndarray, indices: np.ndarray, values: np.ndarray) -> None:
+    """``target[indices] += values`` with repeats handled.
+
+    ``np.add.at`` is the obvious way to write this and is roughly an order of
+    magnitude slower than ``bincount``; on a face list this runs several
+    times per timestep, so it is worth the indirection.
+    """
+    if indices.size:
+        target += np.bincount(indices, weights=values, minlength=target.size)
+
+
+#: Attempts to find a step short enough to respect ``max_saturation_change``
+#: before giving up and taking the shortest one tried.  Running out means the
+#: flux changed by orders of magnitude across the pressure solve, which is
+#: worth a note in the result rather than a silent overshoot.
+_MAX_TIMESTEP_RETRIES = 8
+
+
+@dataclass
+class FlowSettings:
+    """Numerical and fluid settings for the flow model."""
+
+    relperm: CoreyRelativePermeability = field(
+        default_factory=CoreyRelativePermeability)
+    #: Total compressibility (rock plus fluid), 1/Pa.  4e-10 is about
+    #: 3e-6 /psi, typical for an undersaturated oil reservoir.
+    total_compressibility: float = 4.0e-10
+    water_density: float = 1030.0     #: kg/m^3
+    oil_density: float = 800.0        #: kg/m^3
+    #: Vertical-to-horizontal permeability ratio.
+    kv_over_kh: float = 0.1
+    gravity: bool = True
+    #: Largest saturation change allowed in one step, which sets the timestep.
+    max_saturation_change: float = 0.05
+    max_timestep_days: float = 30.0
+    min_timestep_days: float = 1.0e-3
+    #: Skin at every well unless overridden.
+    skin: float = 0.0
+    #: Solution-gas model, or ``None`` for dead oil.  Switching it on adds a
+    #: gas saturation the simulation produces rather than the user imposes;
+    #: see :mod:`sim3d.reservoir.gas` for what it does and does not model.
+    solution_gas: SolutionGas | None = None
+
+    def __post_init__(self) -> None:
+        if self.total_compressibility <= 0:
+            raise ConfigError("total compressibility must be positive")
+        if not 0 < self.max_saturation_change <= 1:
+            raise ConfigError("max_saturation_change must lie in (0, 1]")
+
+
+@dataclass
+class _Connection:
+    """One well's contribution to a timestep, as the solver needs it."""
+
+    cells: np.ndarray
+    weights: np.ndarray      #: well index times mobility, m^3/s per Pa
+    q_water: np.ndarray      #: m^3/s, positive into the reservoir
+    q_oil: np.ndarray
+    mode: "ControlMode"
+    bhp: float
+    #: Free gas, reservoir m^3/s, positive in.  Zero without a solution-gas
+    #: model, and zero at an injector.
+    q_gas: np.ndarray | None = None
+
+    def __iter__(self):
+        """Legacy unpacking as ``(cells, weights, q_water, q_oil)``."""
+        return iter((self.cells, self.weights, self.q_water, self.q_oil))
+
+
+@dataclass
+class WellHistory:
+    """Per-well time series (section 11).  SI internally, oilfield on display."""
+
+    name: str
+    role: str
+    days: list[float] = field(default_factory=list)
+    oil_rate: list[float] = field(default_factory=list)      #: m^3/s, positive out
+    water_rate: list[float] = field(default_factory=list)
+    #: Standard m^3/s of gas, positive out.  Zero without a solution-gas
+    #: model, and even with one it is only the gas that came up dissolved in
+    #: the oil: free gas is immobile, so a well never produces any.
+    gas_rate: list[float] = field(default_factory=list)
+    #: Stock-tank m^3/s of oil, positive out.  Identical to ``oil_rate``
+    #: without a solution-gas model, because without one there is no ``Bo``
+    #: to tell reservoir volume from stock-tank volume.  With one there is,
+    #: and dividing standard gas by reservoir oil would report a gas-oil
+    #: ratio too low by a factor of ``Bo``.
+    oil_rate_std: list[float] = field(default_factory=list)
+    bhp: list[float] = field(default_factory=list)           #: Pa
+    control: list[str] = field(default_factory=list)
+
+    def arrays(self) -> dict[str, np.ndarray]:
+        days = np.asarray(self.days, dtype=float)
+        oil = np.asarray(self.oil_rate, dtype=float)
+        gas = np.asarray(self.gas_rate, dtype=float)
+        std = np.asarray(self.oil_rate_std, dtype=float)
+        if gas.size != days.size:      # a history built before gas was tracked
+            gas = np.zeros_like(days)
+        if std.size != days.size:
+            std = oil
+        return {"days": days, "gas_rate": gas, "oil_rate_std": std,
+                "oil_rate": oil,
+                "water_rate": np.asarray(self.water_rate, dtype=float),
+                "bhp": np.asarray(self.bhp, dtype=float)}
+
+    @property
+    def producing_gor(self) -> np.ndarray:
+        """Produced gas-oil ratio, standard m^3 per stock-tank m^3."""
+        a = self.arrays()
+        oil = a["oil_rate_std"]
+        return np.divide(a["gas_rate"], oil, out=np.zeros_like(oil),
+                         where=np.abs(oil) > 0)
+
+    @property
+    def liquid_rate(self) -> np.ndarray:
+        a = self.arrays()
+        return a["oil_rate"] + a["water_rate"]
+
+    @property
+    def water_cut(self) -> np.ndarray:
+        total = self.liquid_rate
+        water = np.asarray(self.water_rate, dtype=float)
+        return np.divide(water, total, out=np.zeros_like(water), where=np.abs(total) > 0)
+
+    def cumulative(self, which: str) -> np.ndarray:
+        """Cumulative produced or injected volume in m^3, by trapezoid in time."""
+        a = self.arrays()
+        rate = np.abs(a[f"{which}_rate"])
+        seconds = a["days"] * DAY
+        if rate.size < 2:
+            return np.zeros_like(rate)
+        return np.concatenate([[0.0], np.cumsum(
+            0.5 * (rate[1:] + rate[:-1]) * np.diff(seconds))])
+
+    def summary(self) -> str:
+        a = self.arrays()
+        if a["days"].size == 0:
+            return f"{self.name}: never active"
+        oil = self.cumulative("oil")[-1] / STB
+        water = self.cumulative("water")[-1] / STB
+        label = "injected" if self.role == "injector" else "produced"
+        gor = self.producing_gor
+        gas = (f", GOR {gor[-1]:6,.0f} m3/m3 (std gas per stock-tank oil)"
+               if np.any(gor) else "")
+        return (f"{self.name:5s} ({self.role:8s}) "
+                f"final BHP {pa_to_psi(a['bhp'][-1]):7,.0f} psi, "
+                f"final liquid {si_to_stb_per_day(abs(self.liquid_rate[-1])):8,.0f} STB/day, "
+                f"water cut {100 * self.water_cut[-1]:5.1f}%, "
+                f"cumulative {label} oil {oil:12,.0f} STB, water {water:12,.0f} STB"
+                + gas)
+
+
+@dataclass
+class FlowResult:
+    """Reservoir states through time, plus the well histories."""
+
+    days: list[float]
+    pressure: list[np.ndarray]
+    water_saturation: list[np.ndarray]
+    wells: dict[str, WellHistory]
+    settings: FlowSettings
+    material_balance_error: float
+    n_timesteps: int
+    notes: list[str] = field(default_factory=list)
+    #: Gas saturation and solution GOR per report, empty without a
+    #: solution-gas model.
+    gas_saturation: list[np.ndarray] = field(default_factory=list)
+    solution_gor: list[np.ndarray] = field(default_factory=list)
+    #: Fraction of pore volume the hydrocarbons over- or under-filled,
+    #: averaged over the field by pore volume.  Zero without a solution-gas
+    #: model; with one it is the price of keeping the inherited
+    #: lumped-compressibility pressure equation, and it is the number that
+    #: says when black oil is needed.
+    volume_closure_error: float = 0.0
+    #: The same, for the single worst cell.  This is almost always a well
+    #: block, where stock-tank oil arrives faster than the volume balance
+    #: lets it leave; reporting it separately keeps one or two cells from
+    #: standing in for a field that closes to well under a percent.
+    peak_volume_closure_error: float = 0.0
+    #: Cell-steps in which a cell liberated more gas than its pore space had
+    #: room for, or a well asked for more free gas than a cell held.  Both
+    #: are clipped, so this is how many times the model had to round off
+    #: rather than answer.
+    clipped_cell_steps: int = 0
+
+    def at(self, day: float) -> tuple[np.ndarray, np.ndarray]:
+        """Pressure and water saturation at the reported time nearest ``day``."""
+        index = int(np.argmin(np.abs(np.asarray(self.days) - day)))
+        return self.pressure[index], self.water_saturation[index]
+
+    def state_at(self, day: float, baseline: ReservoirState) -> ReservoirState:
+        """A :class:`ReservoirState` at ``day``, carrying the simulated fields.
+
+        Only reservoir cells are overwritten.  The flow model solves nothing
+        outside them, so the overburden keeps its baseline hydrostatic
+        pressure - which the rock physics needs, since effective stress
+        there is what sets the overburden velocities.
+
+        Saturation closure is maintained by moving oil only.  Without a
+        solution-gas model the flow model has no gas phase at all, so any
+        gas in the baseline stays exactly where it was rather than being
+        quietly redistributed; with one, the simulated gas replaces it.
+        """
+        pressure, sw = self.at(day)
+        state = baseline.copy(name=f"{baseline.name}@day{day:g}")
+        mask = np.asarray(baseline.reservoir_mask, dtype=bool)
+        state.pressure = np.where(mask, pressure, baseline.pressure)
+        state.sw = np.where(mask, sw, baseline.sw)
+        kind = "two-phase IMPES"
+        if self.gas_saturation:
+            index = int(np.argmin(np.abs(np.asarray(self.days) - day)))
+            state.sg = np.where(mask, self.gas_saturation[index], baseline.sg)
+            kind = "two-phase IMPES with solution gas"
+        state.so = np.clip(1.0 - state.sw - state.sg, 0.0, 1.0)
+        state.sw = 1.0 - state.so - state.sg
+        state.provenance = [*baseline.provenance,
+                            f"{kind} flow simulation to day {day:g}"]
+        state.validate()
+        return state
+
+    def summary(self) -> str:
+        lines = [
+            f"Flow simulation: {self.days[0]:g} to {self.days[-1]:g} days in "
+            f"{self.n_timesteps:,} timesteps, {len(self.days)} reports",
+            f"  material balance closes to {self.material_balance_error:.3e} "
+            f"of the injected/produced volume",
+            f"  {self.settings.relperm.describe()}",
+        ]
+        if self.settings.solution_gas is not None:
+            peak = max((float(np.max(sg)) for sg in self.gas_saturation), default=0.0)
+            lines += [f"  {self.settings.solution_gas.describe()}",
+                      f"  peak gas saturation {peak:.4f}; hydrocarbon volume "
+                      f"closes to {100 * self.volume_closure_error:.2f}% of pore "
+                      f"volume on average, "
+                      f"{100 * self.peak_volume_closure_error:.1f}% at worst"]
+        lines += [f"  {h.summary()}" for h in self.wells.values()]
+        lines += [f"  note: {n}" for n in self.notes]
+        return "\n".join(lines)
+
+
+class FlowSimulator:
+    """IMPES solver on the reservoir cells of a geological model."""
+
+    def __init__(self, geology, wells, completions: dict, controls: dict,
+                 initial_pressure: np.ndarray, initial_sw: np.ndarray,
+                 settings: FlowSettings | None = None,
+                 initial_sg: np.ndarray | None = None):
+        self.geology = geology
+        self.grid = geology.grid
+        self.settings = settings or FlowSettings()
+        self.wells = list(wells)
+        self.completions = completions
+        self.controls = controls
+
+        self.active = np.asarray(geology.reservoir_mask, dtype=bool)
+        if not self.active.any():
+            raise ValidationError(
+                "the geological model has no reservoir cells, so there is nothing "
+                "to flow through")
+        self.index = -np.ones(self.grid.shape, dtype=np.int64)
+        self.index[self.active] = np.arange(int(self.active.sum()))
+        self.n = int(self.active.sum())
+
+        cell = self.grid.dx * self.grid.dy * self.grid.dz
+        self.pore_volume = (geology.porosity * geology.ntg * cell)[self.active]
+        if np.any(self.pore_volume <= 0):
+            raise ValidationError("a reservoir cell has zero pore volume")
+
+        self._build_transmissibilities()
+        self._build_well_connections()
+
+        self.p = np.asarray(initial_pressure, dtype=float)[self.active].copy()
+        self.sw = np.asarray(initial_sw, dtype=float)[self.active].copy()
+        swc = self.settings.relperm.swc
+        if np.any(self.sw < swc - 1e-9):
+            self.sw = np.maximum(self.sw, swc)
+        # Water displaces oil down to the residual-oil endpoint, so `1 - sor`
+        # is the ceiling for a cell that starts with oil in it.  It is not a
+        # ceiling for a cell that starts without any: an aquifer below the
+        # contact has no oil to leave behind, and clamping it to `1 - sor`
+        # would put oil there on the first step that was never in the model.
+        # The ceiling is therefore per cell, and never below where the cell
+        # began.
+        self.sw_ceiling = np.maximum(1.0 - self.settings.relperm.sor, self.sw)
+        self.z = (self.grid.axis(2)[None, None, :] * np.ones(self.grid.shape))[self.active]
+
+        self.compressibility = np.full(
+            self.n, (settings or FlowSettings()).total_compressibility)
+        self.gas: SolutionGas | None = self.settings.solution_gas
+        self.sg = np.zeros(self.n)
+        self.rs = np.zeros(self.n)
+        self.oil_std = np.zeros(self.n)
+        self.gas_std = np.zeros(self.n)
+        if self.gas is not None:
+            if initial_sg is not None:
+                self.sg = np.asarray(initial_sg, dtype=float)[self.active].copy()
+            self.oil_std, self.gas_std = self.gas.initial_moles(
+                self.p, self.sw, self.sg, self.pore_volume)
+            # Flash straight away, so the reported state at day zero is the
+            # one the solver will actually start from: a reservoir already
+            # below its bubble point has free gas before anything is
+            # produced, and hiding that until the first step would put a
+            # step change into the 4D difference that nothing caused.
+            self.sg, self.rs, _ = self.gas.flash(
+                self.p, self.oil_std, self.gas_std, self.pore_volume, self.sw)
+
+    # ---------------------------------------------------------------- setup
+    def _build_transmissibilities(self) -> None:
+        r"""Harmonic face transmissibilities, with fault multipliers.
+
+        :math:`T = A\,\bar k / d` with :math:`\bar k` the harmonic mean of
+        the two cells' effective permeability - harmonic because the two
+        half-cells are in series, and using an arithmetic mean would let a
+        single good cell short-circuit a barrier.
+        """
+        grid = self.grid
+        k = self.geology.permeability * self.geology.ntg
+        areas = (grid.dy * grid.dz, grid.dx * grid.dz, grid.dx * grid.dy)
+        distances = grid.spacing
+        x, y, z = np.meshgrid(grid.axis(0), grid.axis(1), grid.axis(2), indexing="ij")
+
+        rows, cols, values = [], [], []
+        self._faces = []
+        for axis in range(3):
+            lo = [slice(None)] * 3
+            hi = [slice(None)] * 3
+            lo[axis] = slice(0, grid.shape[axis] - 1)
+            hi[axis] = slice(1, grid.shape[axis])
+            lo, hi = tuple(lo), tuple(hi)
+
+            both = self.active[lo] & self.active[hi]
+            if not both.any():
+                continue
+            k_lo, k_hi = k[lo][both], k[hi][both]
+            harmonic = np.where(k_lo + k_hi > 0,
+                                2.0 * k_lo * k_hi / np.where(k_lo + k_hi > 0,
+                                                             k_lo + k_hi, 1.0), 0.0)
+            if axis == 2:
+                harmonic = harmonic * self.settings.kv_over_kh
+            trans = areas[axis] * harmonic / distances[axis]
+
+            # A fault between the two cells throttles the connection.
+            mid = ((x[lo][both] + x[hi][both]) / 2,
+                   (y[lo][both] + y[hi][both]) / 2,
+                   (z[lo][both] + z[hi][both]) / 2)
+            for fault in self.geology.faults:
+                side_lo = fault.hanging_wall_fraction(
+                    x[lo][both], y[lo][both], z[lo][both]) > 0.5
+                side_hi = fault.hanging_wall_fraction(
+                    x[hi][both], y[hi][both], z[hi][both]) > 0.5
+                crosses = side_lo != side_hi
+                trans = np.where(crosses, trans * fault.transmissibility, trans)
+
+            rows.append(self.index[lo][both])
+            cols.append(self.index[hi][both])
+            values.append(trans)
+            self._faces.append((self.index[lo][both], self.index[hi][both], trans,
+                                mid[2]))
+
+        self.face_lo = np.concatenate([r for r in rows]) if rows else np.zeros(0, int)
+        self.face_hi = np.concatenate([c for c in cols]) if cols else np.zeros(0, int)
+        self.face_trans = (np.concatenate([v for v in values]) if values
+                           else np.zeros(0, float))
+        self.face_dz = (np.concatenate([f[3] for f in self._faces]) if self._faces
+                        else np.zeros(0, float))
+
+    def _build_well_connections(self) -> None:
+        r"""Peaceman well indices for every completed cell.
+
+        .. math:: WI = \frac{2\pi k h}{\ln(r_e/r_w) + s},
+                  \qquad r_e = 0.28\,\frac{\sqrt{\Delta x^2 + \Delta y^2}}{2}
+
+        The equivalent radius is what connects a well - a line source - to a
+        cell-averaged pressure; using the cell pressure directly would make
+        the answer depend on the grid spacing.
+        """
+        grid = self.grid
+        r_e = 0.28 * np.hypot(grid.dx, grid.dy) / 2.0
+        self.connections: dict[str, tuple[np.ndarray, np.ndarray]] = {}
+        for well in self.wells:
+            completions = self.completions.get(well.name)
+            if not completions:
+                continue
+            ix = int(np.argmin(np.abs(grid.axis(0) - well.x)))
+            iy = int(np.argmin(np.abs(grid.axis(1) - well.y)))
+            zs = grid.axis(2)
+            cells, indices = [], []
+            for top, base, _ in resolve_completions(well, self.geology, completions):
+                # Cell boundaries, not centres: see completion_mask.
+                inside = (zs >= top) & (zs <= base)
+                for iz in np.flatnonzero(inside):
+                    if not self.active[ix, iy, iz]:
+                        continue
+                    k = float(self.geology.permeability[ix, iy, iz]
+                              * self.geology.ntg[ix, iy, iz])
+                    wi = (2.0 * np.pi * k * grid.dz
+                          / (np.log(r_e / WELLBORE_RADIUS) + self.settings.skin))
+                    cells.append(int(self.index[ix, iy, iz]))
+                    indices.append(wi)
+            if cells:
+                self.connections[well.name] = (np.array(cells), np.array(indices))
+
+    # ------------------------------------------------------------------ run
+    def run(self, duration_days: float, report_every_days: float = 30.0,
+            progress=None) -> FlowResult:
+        """Advance to ``duration_days``, reporting every ``report_every_days``."""
+        if duration_days <= 0:
+            raise ConfigError(f"duration must be positive, got {duration_days}")
+        settings = self.settings
+        relperm = settings.relperm
+
+        reports = list(np.arange(0.0, duration_days + 1e-9, report_every_days))
+        if reports[-1] < duration_days - 1e-9:
+            reports.append(float(duration_days))
+        histories = {w.name: WellHistory(w.name, w.role) for w in self.wells}
+
+        days = [0.0]
+        pressures = [self._expand(self.p)]
+        saturations = [self._expand(self.sw)]
+        gas_saturations = [self._expand(self.sg)] if self.gas else []
+        solution_gors = [self._expand(self.rs)] if self.gas else []
+        closure, peak_closure = self._volume_closure() if self.gas else (0.0, 0.0)
+        over_full = 0
+        # Record the rates the wells start on. Without this the series begins
+        # at the end of the first timestep and every cumulative volume is
+        # short by that step's production.
+        self._well_rates(0.0, histories, record=True, at_day=0.0)
+        injected = produced = 0.0
+        # The accumulation term the solver uses, summed step by step rather
+        # than differenced end to end. For a constant compressibility the two
+        # are identical; once gas makes it a field that changes every step,
+        # only the running sum is what the equations actually conserved.
+        stored = 0.0
+        step = 0
+        day = 0.0
+        next_report = 1
+        truncated = 0
+
+        while day < duration_days - 1e-9 and step < 2_000_000:
+            dt_days = min(settings.max_timestep_days,
+                          reports[next_report] - day if next_report < len(reports)
+                          else settings.max_timestep_days)
+            dt_days = max(dt_days, settings.min_timestep_days)
+            dt = dt_days * DAY
+
+            # The saturation limit has to be checked against the flux the
+            # advance will actually use, which is the one the pressure solve
+            # produces - not the one standing before it. Checking only
+            # beforehand let 38 % of steps move a cell's saturation past the
+            # limit, the worst by a factor of five, and those were exactly
+            # the long steps the reported well rates lurched on.
+            #
+            # So the step is provisional until it passes the check on its own
+            # result: if it fails, the pressure is rolled back and the step is
+            # retried shorter. Shrinking dt for the saturation alone would be
+            # cheaper and wrong - the pressure solve is implicit in dt, and a
+            # saturation advanced over a different interval than the pressure
+            # it came from does not conserve mass.
+            pressure_before = self.p.copy()
+            last = _MAX_TIMESTEP_RETRIES - 1
+            for attempt in range(_MAX_TIMESTEP_RETRIES):
+                rates = self._well_rates(day, histories, record=False)
+                dt, dt_days = self._limit_timestep(dt, dt_days, rates)
+                modes = self._pinned_modes(rates)
+                self._solve_pressure(dt, rates)
+                # Re-evaluate on the new pressure - that is the rate actually
+                # delivered - but hold the control decision fixed, so the rate
+                # applied here is exactly the one the solve honoured.
+                rates = self._well_rates(day, histories, record=False,
+                                         at_day=day + dt_days, modes=modes)
+                peak = self._peak_saturation_rate(rates)
+                allowed = (settings.max_saturation_change / peak if peak > 0
+                           else float("inf"))
+                if dt <= allowed or dt_days <= settings.min_timestep_days:
+                    break
+                if attempt == last:
+                    # Out of attempts, but the loop must still leave a pressure
+                    # field that was solved for the dt about to be used: rolling
+                    # back and advancing anyway desynchronises the two halves of
+                    # IMPES and shows up directly as material-balance error.
+                    truncated += 1
+                    break
+                self.p = pressure_before.copy()
+                dt_days = max(allowed / DAY, settings.min_timestep_days)
+                dt = dt_days * DAY
+            # Recorded once, on the step that was actually taken: a rejected
+            # trial is not history.
+            rates = self._well_rates(day, histories, record=True,
+                                     at_day=day + dt_days, modes=modes)
+            stored += float(np.sum(self.pore_volume * self.compressibility
+                                   * (self.p - pressure_before)))
+            self._advance_saturation(dt, rates)
+            if self.gas is not None:
+                over_full += self._advance_solution_gas(dt, rates)
+                mean_error, worst = self._volume_closure()
+                closure = max(closure, mean_error)
+                peak_closure = max(peak_closure, worst)
+
+            for connection in rates.values():
+                total = float(np.sum(connection.q_water)
+                              + np.sum(connection.q_oil)
+                              + (np.sum(connection.q_gas)
+                                 if connection.q_gas is not None else 0.0)) * dt
+                if total > 0:
+                    injected += total
+                else:
+                    produced -= total
+
+            day += dt_days
+            step += 1
+            if next_report < len(reports) and day >= reports[next_report] - 1e-9:
+                days.append(round(day, 9))
+                pressures.append(self._expand(self.p))
+                saturations.append(self._expand(self.sw))
+                if self.gas is not None:
+                    gas_saturations.append(self._expand(self.sg))
+                    solution_gors.append(self._expand(self.rs))
+                next_report += 1
+                if progress is not None:
+                    progress(day, duration_days)
+
+        throughput = max(injected + produced, 1e-12)
+        error = abs(stored - (injected - produced)) / throughput
+
+        notes = []
+        if truncated:
+            notes.append(
+                f"{truncated} of {step} timesteps could not be shortened enough "
+                f"to keep every cell's saturation change within "
+                f"{settings.max_saturation_change:g}; those took the shortest "
+                f"length tried")
+        if not settings.gravity:
+            notes.append("gravity disabled: the flood will not segregate vertically")
+        if self.gas is not None:
+            peak = max(float(np.max(sg)) for sg in gas_saturations)
+            if peak > self.gas.critical_saturation:
+                notes.append(
+                    f"gas saturation reached {peak:.3f}, past the critical "
+                    f"{self.gas.critical_saturation:g} at which free gas starts to "
+                    f"move; this model holds it in place, so from here it "
+                    f"under-produces gas, forms no gas cap, and overstates the "
+                    f"gas left behind - a black-oil simulator is the instrument")
+            if over_full:
+                notes.append(
+                    f"{over_full} cell-steps liberated more gas than the pore "
+                    f"space had room for and were clipped")
+            if closure > 0.02:
+                notes.append(
+                    f"hydrocarbon volume closes only to {100 * closure:.1f}% of "
+                    f"pore volume on average: the pressure equation carries one "
+                    f"lumped compressibility and cannot enforce the volume "
+                    f"balance the way a black-oil solve does")
+        return FlowResult(days=days, pressure=pressures, water_saturation=saturations,
+                          wells=histories, settings=settings,
+                          material_balance_error=error, n_timesteps=step, notes=notes,
+                          gas_saturation=gas_saturations, solution_gor=solution_gors,
+                          volume_closure_error=closure,
+                          peak_volume_closure_error=peak_closure,
+                          clipped_cell_steps=over_full)
+
+    # ------------------------------------------------------------- internals
+    def _expand(self, values: np.ndarray) -> np.ndarray:
+        """Scatter an active-cell vector back onto the full grid."""
+        out = np.zeros(self.grid.shape)
+        out[self.active] = values
+        return out
+
+    def _potential_terms(self):
+        """Gravity head across each face, per phase, in Pa."""
+        if not self.settings.gravity or self.face_trans.size == 0:
+            zero = np.zeros(self.face_trans.shape)
+            return zero, zero
+        dz = self.z[self.face_hi] - self.z[self.face_lo]
+        return (self.settings.water_density * GRAVITY * dz,
+                self.settings.oil_density * GRAVITY * dz)
+
+    def _upstream(self, potential_difference):
+        """Index of the upstream cell of each face, by potential."""
+        return np.where(potential_difference > 0, self.face_hi, self.face_lo)
+
+    def _well_rates(self, day: float, histories, record: bool, at_day=None,
+                    modes: dict | None = None):
+        """Per-connection water and oil rates, honouring mode and BHP limits.
+
+        ``modes`` pins the control decision made before the pressure solve,
+        as ``{well: (mode, bhp)}``.  Both halves matter.  Pinning the mode
+        alone is worse than not pinning at all: a well that switched to
+        pressure control because its rate target implied an illegal drawdown
+        would come back through the pressure branch and read
+        ``control.target`` - which for that well is a *rate* - as its
+        bottom-hole pressure.
+        """
+        relperm = self.settings.relperm
+        out = {}
+        for well in self.wells:
+            control: WellControl | None = self.controls.get(well.name)
+            connection = self.connections.get(well.name)
+            if control is None or connection is None or not control.active(day):
+                if record:
+                    self._record(histories[well.name], at_day if at_day is not None
+                                 else day, 0.0, 0.0, float("nan"), "shut")
+                continue
+            cells, wi = connection
+            injector = well.role == "injector"
+            lam_w, lam_o = relperm.mobilities(self.sw[cells])
+            lam_g = (self.gas.mobility(self.sg[cells]) if self.gas is not None
+                     else np.zeros_like(lam_w))
+            lam_t = lam_w + lam_o + lam_g
+            # An injector pushes water into the formation at the injected
+            # fluid's mobility, not at the in-situ mixture's.
+            mobility = (np.full_like(lam_t, relperm.krw_max / relperm.water_viscosity)
+                        if injector else lam_t)
+            weights = wi * mobility
+            total_weight = float(weights.sum())
+            if total_weight <= 0:
+                if record:
+                    self._record(histories[well.name],
+                                 at_day if at_day is not None else day,
+                                 0.0, 0.0, float("nan"), "zero mobility")
+                continue
+
+            pinned = modes.get(well.name) if modes else None
+            mode = pinned[0] if pinned else control.mode
+            if mode is ControlMode.BHP:
+                bhp = pinned[1] if pinned else control.target
+                q = weights * (bhp - self.p[cells])
+            else:
+                target = control.target * (1.0 if injector else -1.0)
+                q = target * weights / total_weight
+                bhp = float(np.average(self.p[cells] + q / np.maximum(weights, 1e-300),
+                                       weights=weights))
+                if control.bhp_limit is not None and pinned is None:
+                    violated = (bhp > control.bhp_limit if injector
+                                else bhp < control.bhp_limit)
+                    if violated:
+                        bhp = control.bhp_limit
+                        q = weights * (bhp - self.p[cells])
+                        mode = ControlMode.BHP
+            # Split the stream by mobility. Without gas this is exactly the
+            # two-phase fractional flow it always was; with it, the well
+            # takes the free gas that is mobile where it is completed.
+            safe = np.where(lam_t > 0.0, lam_t, 1.0)
+            fw_cell = np.where(lam_t > 0.0, lam_w / safe, 0.0)
+            fg_cell = np.where(lam_t > 0.0, lam_g / safe, 0.0)
+            if injector:
+                q_water = np.where(q >= 0.0, q, q * fw_cell)
+                q_gas = np.where(q >= 0.0, 0.0, q * fg_cell)
+            else:
+                q_water = q * fw_cell
+                q_gas = q * fg_cell
+            q_oil = q - q_water - q_gas
+            out[well.name] = _Connection(cells=cells, weights=weights,
+                                         q_water=q_water, q_oil=q_oil,
+                                         mode=mode, bhp=bhp, q_gas=q_gas)
+            if record:
+                # Only the gas dissolved in the produced oil: free gas does
+                # not move in this model, so it is never produced. That caps
+                # the well's GOR at Rs(p) and is the single largest thing
+                # this model gets wrong once gas is mobile.
+                surface_gas = 0.0
+                surface_oil = None
+                if self.gas is not None:
+                    stock_tank = q_oil / self.gas.bo(self.p[cells], self.rs[cells])
+                    surface_oil = float(np.sum(stock_tank))
+                    surface_gas = float(np.sum(
+                        stock_tank * self.rs[cells]
+                        + q_gas / self.gas.bg(self.p[cells])))
+                self._record(histories[well.name],
+                             at_day if at_day is not None else day,
+                             float(np.sum(q_oil)), float(np.sum(q_water)), bhp,
+                             mode.value, gas=surface_gas, oil_std=surface_oil)
+        return out
+
+    @staticmethod
+    def _pinned_modes(rates) -> dict:
+        """The control decision each well arrived at - mode *and* pressure."""
+        return {name: (connection.mode, connection.bhp)
+                for name, connection in rates.items()}
+
+    @staticmethod
+    def _record(history: WellHistory, day, oil, water, bhp, control,
+                gas=0.0, oil_std=None) -> None:
+        history.days.append(float(day))
+        history.oil_rate.append(-float(oil))     # positive out of the reservoir
+        history.water_rate.append(-float(water))
+        history.gas_rate.append(-float(gas))
+        history.oil_rate_std.append(-float(oil if oil_std is None else oil_std))
+        history.bhp.append(float(bhp))
+        history.control.append(control)
+
+    def _solve_pressure(self, dt: float, rates) -> None:
+        """Implicit pressure solve for one timestep."""
+        relperm = self.settings.relperm
+        n = self.n
+        # Compressibility is a per-cell field once gas can come out of
+        # solution, and a two-and-a-half-order-of-magnitude one at that. It
+        # is lagged to the start of the step, which keeps the system linear
+        # and symmetric; the saturation limit already bounds how far a cell
+        # can move within one step.
+        self.compressibility = np.full(n, self.settings.total_compressibility)
+        if self.gas is not None:
+            self.compressibility = self.gas.total_compressibility(
+                self.p, self.sw, self.sg, self.rs,
+                self.settings.total_compressibility)
+        storage = self.pore_volume * self.compressibility / dt
+
+        lam_w, lam_o = relperm.mobilities(self.sw)
+        head_w, head_o = self._potential_terms()
+        # Upstream weighting on the previous pressure field.
+        dphi = (self.p[self.face_hi] - self.p[self.face_lo])
+        up = self._upstream(dphi)
+        trans_t = self.face_trans * (lam_w[up] + lam_o[up])
+        gravity = self.face_trans * (lam_w[up] * head_w + lam_o[up] * head_o)
+
+        diagonal = storage.copy()
+        rhs = storage * self.p
+        _scatter_add(diagonal, self.face_lo, trans_t)
+        _scatter_add(diagonal, self.face_hi, trans_t)
+        # Cell ``lo``'s equation carries -T.lambda.rho.g.(z_hi - z_lo) and
+        # cell ``hi``'s the opposite: the gravity head drives flow *down*, so
+        # getting this sign backwards inverts the hydrostatic gradient and
+        # makes a waterflood override instead of underrun.
+        _scatter_add(rhs, self.face_lo, -gravity)
+        _scatter_add(rhs, self.face_hi, gravity)
+
+        # A well on rate control contributes a known source term. A well on
+        # bottom-hole pressure does not: its rate depends on the pressure
+        # being solved for, so it enters the matrix implicitly. Treating it
+        # explicitly - using last step's pressure - makes the rate the solve
+        # honours differ from the rate the saturation update then applies,
+        # and material balance stops closing.
+        for connection in rates.values():
+            if connection.mode is ControlMode.BHP:
+                _scatter_add(diagonal, connection.cells, connection.weights)
+                _scatter_add(rhs, connection.cells,
+                             connection.weights * connection.bhp)
+            else:
+                source = connection.q_water + connection.q_oil
+                if connection.q_gas is not None:
+                    source = source + connection.q_gas
+                _scatter_add(rhs, connection.cells, source)
+
+        rows = np.concatenate([np.arange(n), self.face_lo, self.face_hi])
+        cols = np.concatenate([np.arange(n), self.face_hi, self.face_lo])
+        data = np.concatenate([diagonal, -trans_t, -trans_t])
+        matrix = csr_matrix((data, (rows, cols)), shape=(n, n))
+
+        # The matrix is symmetric positive definite and changes only through
+        # the mobilities, so conjugate gradients warm-started from the last
+        # pressure converges in a handful of iterations. Re-factorising with a
+        # direct solver every step costs far more than the solve itself.
+        jacobi = LinearOperator((n, n), matvec=lambda v: v / diagonal, dtype=float)
+        solution, info = cg(matrix, rhs, x0=self.p, rtol=1e-10, atol=0.0,
+                            maxiter=1000, M=jacobi)
+        if info != 0:
+            solution = spsolve(matrix, rhs)   # fall back rather than drift
+        self.p = solution
+        if not np.all(np.isfinite(self.p)):
+            raise ValidationError(
+                "the pressure solve produced non-finite values; the reservoir may "
+                "be disconnected, or a transmissibility may be zero everywhere")
+
+    def _face_water_flux(self):
+        """Water volumetric flux on each face, positive from lo to hi."""
+        relperm = self.settings.relperm
+        lam_w, lam_o = relperm.mobilities(self.sw)
+        head_w, _ = self._potential_terms()
+        dphi_w = (self.p[self.face_hi] - self.p[self.face_lo]) - head_w
+        up = np.where(dphi_w > 0, self.face_hi, self.face_lo)
+        return -self.face_trans * lam_w[up] * dphi_w
+
+    def _face_oil_flux(self):
+        """Oil volumetric flux on each face and the upstream cell of each.
+
+        The mirror of :meth:`_face_water_flux`: positive from ``lo`` to
+        ``hi``, in reservoir m^3/s.  The upstream index comes back with it
+        because the dissolved gas rides on this flux at the upstream cell's
+        solution GOR, not at an average of the two.
+        """
+        _, lam_o = self.settings.relperm.mobilities(self.sw)
+        _, head_o = self._potential_terms()
+        dphi_o = (self.p[self.face_hi] - self.p[self.face_lo]) - head_o
+        up = self._upstream(dphi_o)
+        return -self.face_trans * lam_o[up] * dphi_o, up
+
+    def _net_oil(self, rates) -> np.ndarray:
+        """Net oil volumetric rate into every cell, reservoir m^3/s."""
+        flux, _ = self._face_oil_flux()
+        net = np.zeros(self.n)
+        _scatter_add(net, self.face_lo, -flux)
+        _scatter_add(net, self.face_hi, flux)
+        for connection in rates.values():
+            _scatter_add(net, connection.cells, connection.q_oil)
+            if connection.q_gas is not None:
+                _scatter_add(net, connection.cells, connection.q_gas)
+        return net
+
+    def _advance_solution_gas(self, dt: float, rates) -> int:
+        """Transport oil and its gas, then flash.  Returns the over-full count.
+
+        Oil and gas move as standard volumes, which is what makes the gas
+        conserved across the flash: converting reservoir flux to stock-tank
+        flux at the upstream cell's ``Bo`` and carrying its ``Rs`` is the
+        whole of the black-oil transport idea, minus the free-gas phase.
+
+        The explicit step shares the water's CFL limit rather than needing
+        one of its own - the oil flux is bounded by the same total flux -
+        and the flash that follows is instantaneous, so it cannot overshoot
+        a timestep it never integrates over.
+        """
+        gas = self.gas
+        bo = gas.bo(self.p, self.rs)
+        bg = gas.bg(self.p)
+        flux, up = self._face_oil_flux()
+        oil_flux = flux / bo[up]
+        gas_flux = oil_flux * self.rs[up]
+
+        d_oil = np.zeros(self.n)
+        d_gas = np.zeros(self.n)
+        _scatter_add(d_oil, self.face_lo, -oil_flux)
+        _scatter_add(d_oil, self.face_hi, oil_flux)
+        _scatter_add(d_gas, self.face_lo, -gas_flux)
+        _scatter_add(d_gas, self.face_hi, gas_flux)
+
+        free = np.maximum(self.gas_std - self.oil_std * self.rs, 0.0)
+        starved = 0
+        for connection in rates.values():
+            cells = connection.cells
+            q_std = connection.q_oil / bo[cells]
+            _scatter_add(d_oil, cells, q_std)
+            gas_std = q_std * self.rs[cells]
+            if connection.q_gas is not None:
+                # A well cannot take more free gas out of a cell in one step
+                # than the cell holds. The limit is explicit rather than left
+                # to the clamp below, so when it bites it is counted instead
+                # of quietly creating gas.
+                offtake = connection.q_gas / bg[cells]
+                limit = -free[cells] / dt
+                starved += int(np.count_nonzero(offtake < limit))
+                gas_std = gas_std + np.maximum(offtake, limit)
+            _scatter_add(d_gas, cells, gas_std)
+
+        self.oil_std = np.maximum(self.oil_std + dt * d_oil, 0.0)
+        self.gas_std = np.maximum(self.gas_std + dt * d_gas, 0.0)
+        self.sg, self.rs, over_full = gas.flash(
+            self.p, self.oil_std, self.gas_std, self.pore_volume, self.sw)
+        return int(np.count_nonzero(over_full)) + starved
+
+    def _volume_closure(self) -> tuple[float, float]:
+        """Hydrocarbon volume mismatch as a pore-volume fraction.
+
+        Returns ``(mean, worst)``, the mean weighted by pore volume.  The two
+        differ by two orders of magnitude in practice - the body of the
+        reservoir closes to well under a percent while a well block can be
+        out by half its pore volume - so reporting only one of them would
+        mislead whichever way it was chosen.
+        """
+        error = self.gas.volume_error(self.p, self.oil_std, self.sg,
+                                      self.pore_volume, self.sw, self.rs)
+        if not error.size:
+            return 0.0, 0.0
+        mean = float(np.sum(error * self.pore_volume) / np.sum(self.pore_volume))
+        return mean, float(error.max())
+
+    def _net_water(self, flux, rates) -> np.ndarray:
+        """Net water volumetric rate into every cell, m^3/s."""
+        net = np.zeros(self.n)
+        _scatter_add(net, self.face_lo, -flux)
+        _scatter_add(net, self.face_hi, flux)
+        for connection in rates.values():
+            _scatter_add(net, connection.cells, connection.q_water)
+        return net
+
+    def _advance_saturation(self, dt: float, rates) -> None:
+        """Explicit upstream saturation update."""
+        flux = self._face_water_flux()
+        net = self._net_water(flux, rates)
+        self.sw = self.sw + dt * net / self.pore_volume
+        relperm = self.settings.relperm
+        self.sw = np.clip(self.sw, relperm.swc, self.sw_ceiling)
+
+    def _peak_saturation_rate(self, rates) -> float:
+        """Fastest saturation change any cell would see, per second.
+
+        The water term alone is enough while oil is only ever the
+        complement of water: nothing about the oil is integrated, so
+        nothing about it can go unstable.  Once solution gas is on the oil
+        *is* integrated - stock-tank oil and its dissolved gas are
+        transported explicitly - and so it needs a limit of its own.
+
+        Without it a depletion run has no limit at all in practice.  A
+        reservoir with no injector barely moves any water, so the water
+        term stays near zero and lets the step run to its ceiling while the
+        oil, which is the only thing actually flowing, is transported over
+        a month in one explicit step.  It shows up as a gas saturation that
+        oscillates between reports and a volume balance out by two orders
+        of magnitude.
+        """
+        net = self._net_water(self._face_water_flux(), rates)
+        change = np.abs(net) / self.pore_volume
+        if self.gas is not None:
+            change = np.maximum(change, np.abs(self._net_oil(rates))
+                                / self.pore_volume)
+        return float(change.max()) if change.size else 0.0
+
+    def _limit_timestep(self, dt: float, dt_days: float, rates):
+        """Shrink the step so no cell's saturation moves more than allowed."""
+        peak = self._peak_saturation_rate(rates)
+        if peak * dt > self.settings.max_saturation_change:
+            dt = self.settings.max_saturation_change / peak
+            dt_days = max(dt / DAY, self.settings.min_timestep_days)
+            dt = dt_days * DAY
+        return dt, dt_days

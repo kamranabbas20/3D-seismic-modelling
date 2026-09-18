@@ -1,0 +1,143 @@
+# Three-layer 4D with a realistic OBN acquisition.
+#
+# The sibling three_layer_4d.yaml is the fast one: a 2 km model with a 1 km
+# spread, which caps offsets at 0.85x the source-to-target standoff and
+# truncates the migration aperture at 37 degrees. That truncation is what
+# put arcs in its image.
+#
+# This one is sized for the survey rather than for the clock: a 2.8 km model
+# so the spread can reach 1.9 km, giving 55 degrees of aperture and offsets
+# past 1.4x the standoff. Fold goes from 1,296 traces to 11,025.
+#
+# It is still not a field survey. Real marine OBN shoots every 25-50 m with
+# nodes every 200-400 m, and reciprocity makes that affordable because the
+# nodes are the sparse set - here the 25 modelled sources stand in for a
+# node carpet and the 441 receivers for the shot carpet. There is also no
+# free surface and no water layer, so no ghosts and no surface multiples.
+#
+# Budget roughly 90 minutes.
+#
+#     sim3d run examples/configs/three_layer_obn.yaml
+
+project:
+  name: three_layer_obn
+  description: Shale-sand-shale 4D with a realistic wide-aperture OBN survey
+  seed: 1
+
+domains:
+  geology_bounds: [[0, 2800], [0, 2800], [0, 1800]]
+  geology_spacing: [25.0, 25.0, 10.0]
+  # The top is at 300 m, not 700, so the acquisition can sit well above
+  # the target. With sources only 1.6 wavelengths above the sand the
+  # injection near-field overlaps the reservoir top and no amount of
+  # filtering separates them; at 540 m it is 4.2 wavelengths clear.
+  propagation_bounds: [[200, 2600], [200, 2600], [300, 1700]]
+  propagation_spacing: [16.0, 16.0, 16.0]
+  target_bounds: [[900, 1900], [900, 1900], [1150, 1400]]
+
+geology:
+  template: three_layer
+  parameters:
+    extent: [2800.0, 2800.0, 1800.0]
+    z_reservoir: 1200.0
+    gross: 150.0
+    seed: 1
+
+wells:
+  pattern: line_drive
+  parameters:
+    centre: [1400.0, 1400.0]
+    n_injectors: 1
+    n_producers: 1
+    separation: 800.0
+    perforation: [1200.0, 1350.0]
+
+reservoir:
+  source: flow
+  baseline:
+    sw: 0.25
+    sg: 0.0
+    temperature: 80.0
+    pressure_gradient: 10500.0
+
+simulation:
+  duration_days: 3650.0
+  report_every_days: 91.25
+  # Derived, not picked. The flood must outgrow the first Fresnel zone at
+  # the reservoir (350 m at 12 Hz and 1200 m) or seismic sees a blur rather
+  # than an anomaly with shape; the flood radius reaches it at day 548 and
+  # clears it with margin (1.09x) at day 730. Amplitude is never the
+  # binding constraint here - the 4D NRMS is already 11% at one year - and
+  # the flood reaches the model boundary around day 2650, so later monitors
+  # are contaminated. Two years is also the conventional field repeat.
+  monitor_day: 730.0
+  sweep_years: 10.0
+
+rock_physics:
+  temperature: 80.0
+  overburden_density: 2300.0
+
+solver:
+  spatial_order: 8
+  courant_safety: 0.9
+  record_length: 1.2
+  pml_nodes: 12
+  backend: auto
+  dtype: float32
+
+source:
+  type: ricker
+  frequency: 12.0
+
+acquisition:
+  type: OBN
+  centre: [1400.0, 1400.0]
+  # The 25 sources stand in for an OBN node carpet and the 441 receivers for
+  # the shot carpet. That is how reciprocity makes a dense-shot survey
+  # affordable: only the sparse set is propagated, so 11,025 traces cost 25
+  # propagation pairs rather than 441 of them.
+  #
+  # A 1,900 m spread about a 660 m standoff subtends 55 degrees at the
+  # reservoir, against 37 in the fast config, and reaches offsets of 1.4x
+  # the standoff. PML clearance (12 nodes at 16 m from a domain starting at
+  # 200 m) puts the limit at 392 m, and the outermost source sits at 450 m.
+  receiver_spacing: 95.0
+  receiver_extent: 1900.0
+  source_spacing: 475.0
+  source_line_spacing: 475.0
+  source_extent: 1900.0
+  # 492 m is the shallowest either may sit given the same PML clearance from
+  # the domain top at 300 m.
+  receiver_depth: 560.0
+  source_depth: 540.0
+
+imaging:
+  method: RTM
+  imaging_condition: source_normalized
+  laplacian_filter: true
+
+synthetic:
+  layout: wells
+  count: 9
+  points: []
+
+sim2seis:
+  stacks:
+    - {name: near, angles: [0.0, 15.0]}
+    - {name: mid, angles: [15.0, 30.0]}
+    - {name: far, angles: [30.0, 45.0]}
+  sub_angles: 5
+  map_to_depth: true
+  sample_interval: null
+  record_length: null
+
+fourd:
+  scenarios: [baseline, pressure_only, saturation_only, combined]
+
+budget:
+  max_ram_gb: 8.0
+  max_disk_gb: 50.0
+  max_cost_class: HIGH
+
+output:
+  directory: runs

@@ -1,0 +1,156 @@
+# A stratigraphic trap: a reservoir sand that pinches out updip.
+#
+# Every other example here is a structural trap - a fold, a tilted fault
+# block - where the reservoir is continuous and the closure comes from its
+# shape. This one is closed by the stratigraphy instead: the sand thins to
+# nothing against the seal at x = 1,950 m, and everything updip of that is
+# shale. There is no spill point and no contact holding the oil in; the rock
+# simply stops.
+#
+# It is built with `layer_cake`, which stacks units by *thickness* rather
+# than naming a depth per horizon:
+#
+#     top[0] = datum + relief,   top[k+1] = top[k] + thickness[k](x, y)
+#
+# That is what makes a pinchout expressible at all. A thickness may vary
+# across the map and reach zero, but it is never negative, so the horizons
+# below a pinching unit rise to meet it and no horizon can cross another -
+# which `build_geology` refuses, and which naming depths makes very easy to
+# do by accident.
+#
+# The whole package dips 6 degrees towards +x, so the sand is both thinning
+# and climbing: the trap needs the two together, and tilting one horizon
+# without the others would drive it through its neighbours rather than fold
+# them.
+#
+project:
+  name: pinchout_wedge
+  description: >
+    A stratigraphic trap - a 90 m reservoir sand thinning to zero updip
+    against a dipping seal, with one producer in the thick part and one
+    near the pinchout edge.
+  seed: 1
+
+domains:
+  geology_bounds: [[0, 3000], [0, 2000], [0, 2400]]
+  geology_spacing: [25.0, 50.0, 5.0]
+  propagation_bounds: [[0, 2992], [800, 1200], [0, 2000]]
+  propagation_spacing: [8.0, 8.0, 8.0]
+  target_bounds: [[400, 2400], [960, 1040], [1100, 1600]]
+
+geology:
+  template: layer_cake
+  parameters:
+    extent: [3000.0, 2000.0, 2400.0]
+    datum: 0.0
+    # One structure for the whole package - see the header.
+    structure:
+      style: dipping
+      dip: 6.0
+      azimuth: 90.0        # dips towards +x, so +x is downdip
+    units:
+      - name: overburden
+        facies: shale
+        thickness: 900.0
+      - name: upper_sand
+        facies: clean_sandstone
+        thickness: 120.0
+        is_reservoir: false   # inert: a bright, unchanging 4D control
+      - name: seal
+        facies: shale
+        thickness: 60.0
+      - name: reservoir
+        facies: clean_sandstone
+        thickness: 90.0
+        is_reservoir: true
+        porosity: 0.26
+        # Full thickness downdip, gone by two thirds of the way updip.
+        # `azimuth` 270 points towards -x, so the sand thins updip.
+        pinch_out:
+          shape: wedge
+          azimuth: 270.0
+          start: 0.35
+          end: 0.65
+      - name: underburden
+        facies: sandy_shale
+        thickness: 500.0
+
+rock_physics:
+  gor: 40.0
+  dry_frame_model: soft_sand
+  temperature: 70.0
+  facies:
+    shale:
+      dry_frame_model: stiff_sand
+      critical_porosity: 0.55
+      coordination: 6.0
+
+reservoir:
+  source: flow
+  baseline:
+    sw: 0.22
+    temperature: 70.0
+
+wells:
+  wells:
+    # Downdip, where the sand is at full thickness.
+    - name: I1
+      role: injector
+      x: 2400.0
+      y: 1000.0
+      completions: [reservoir]
+      control: water_rate
+      target: 4000.0
+      bhp_limit_psi: 3200.0
+    # Updip, close to where the sand thins away.
+    - name: P1
+      role: producer
+      x: 1350.0
+      y: 1000.0
+      completions: [reservoir]
+      control: liquid_rate
+      target: 4000.0
+      bhp_limit_psi: 900.0
+
+simulation:
+  duration_days: 1095.0
+  report_every_days: 91.25
+  max_timestep_days: 30.0
+  monitor_day: 1095.0
+  swc: 0.22
+  sor: 0.25
+  gravity: true
+
+source:
+  type: ricker
+  frequency: 22.0
+
+acquisition:
+  type: OBN
+  # Centred on the target, which runs x = 400 to 2,400 m.
+  centre: [1400.0, 1000.0]
+  receiver_depth: 300.0
+  source_depth: 150.0
+  receiver_spacing: 50.0
+  source_spacing: 100.0
+  # Set explicitly, and they have to be. Left unset the inline extent is
+  # derived from the target plus a margin - but this target is only 80 m
+  # wide crossline, and narrowing `*_extent_y` to match the 2.5D slab drags
+  # the inline footprint down with it: the survey collapsed to x = 1,396 to
+  # 1,596 m against a 2,000 m target, and QC said so.
+  receiver_extent: 2600.0        # x = 100 to 2,700 m
+  source_extent: 2560.0          # x = 120 to 2,680 m
+  receiver_extent_y: 120.0
+  source_extent_y: 1.0
+
+imaging:
+  method: RTM
+
+sim2seis:
+  map_to_depth: true
+
+fourd:
+  scenarios: [baseline, combined]
+
+output:
+  directory: runs

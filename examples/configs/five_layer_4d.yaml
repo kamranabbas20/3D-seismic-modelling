@@ -1,0 +1,157 @@
+# Shale, sand, shale, sand, shale - and only the thin fourth unit changes.
+#
+# This model exists to answer a question the three-layer case could not. There,
+# the only reflectors in the whole model were the target's own, so everything a
+# migration drew above the reservoir was artefact with nothing to compete
+# against, and the image was dominated by the acquisition near-field and by
+# migration smiles. Here the 500 m interval between the acquisition and the
+# target carries two strong, inert interfaces:
+#
+#   0 -  500 m   shale
+# 500 - 1000 m   sand        <- thick, bright, and nothing ever happens in it
+#1000 - 1050 m   shale (seal)
+#1050 - 1080 m   sand        <- the reservoir: injection, production, the 4D
+#1080 -          shale
+#
+# The upper sand is marked `is_reservoir: false` in the template, so no cell in
+# it is ever given to the flow simulation. It should reproduce identically in
+# the baseline and the monitor and difference to zero. A 4D anomaly on it would
+# be a bug in the modelling or the imaging, and that is exactly what makes it
+# worth having: an internal control the three-layer model does not provide.
+#
+# The 30 m target is thinner than the seismic can resolve - a quarter
+# wavelength here is about 55 m - so its top and base interfere into one
+# composite event and the 4D appears as an amplitude change rather than as two
+# separable interfaces. That is how a thin reservoir behaves in real 4D.
+#
+project:
+  name: five_layer_4d
+  description: >
+    Five flat layers with a reflective, inert overburden above a thin 30 m
+    reservoir; one injector and one producer 600 m apart, three years,
+    imaged by 1D convolution and by full-wave modelling with RTM.
+  seed: 1
+
+domains:
+  # 5 m vertical sampling: a 30 m reservoir on a 10 m grid is three cells,
+  # which is too few for the flow front and for the rock physics that reads it.
+  geology_bounds: [[0, 2000], [0, 2000], [0, 1800]]
+  geology_spacing: [25.0, 25.0, 5.0]
+  # 12 m isotropic. At Fmax 28.8 Hz and Vmin about 2,000 m/s the shortest
+  # wavelength is 70 m, sampled at 5.8 cells against the 5.25 an 8th-order
+  # operator needs.
+  propagation_bounds: [[450, 1550], [450, 1550], [0, 1500]]
+  propagation_spacing: [12.0, 12.0, 12.0]
+  target_bounds: [[700, 1300], [700, 1300], [950, 1200]]
+
+geology:
+  template: five_layer
+  parameters:
+    extent: [2000.0, 2000.0, 1800.0]
+    overburden_shale: 500.0
+    upper_sand: 500.0
+    seal: 50.0
+    gross: 30.0
+    base_shale: 50.0
+    seed: 1
+
+rock_physics:
+  dry_frame_model: soft_sand
+  critical_porosity: 0.40
+  coordination: 9.0
+  temperature: 60.0
+  facies:
+    shale:
+      dry_frame_model: stiff_sand
+      critical_porosity: 0.55
+      coordination: 6.0
+
+reservoir:
+  source: flow
+  baseline:
+    sw: 0.25
+    temperature: 60.0
+    pressure_gradient: 10500.0
+    datum_pressure: 101325.0
+
+wells:
+  wells:
+    - name: I1
+      role: injector
+      x: 700.0
+      y: 1000.0
+      completions: [reservoir]
+      control: water_rate
+      target: 12000.0
+      bhp_limit_psi: 2400.0     # below the 2,491 psi a 0.7 psi/ft gradient gives
+    - name: P1
+      role: producer
+      x: 1300.0
+      y: 1000.0
+      completions: [reservoir]
+      control: liquid_rate
+      target: 12000.0          # VRR 1.0
+      bhp_limit_psi: 600.0
+
+simulation:
+  duration_days: 1095.0
+  report_every_days: 45.625
+  max_timestep_days: 30.0
+  monitor_day: 1095.0
+  swc: 0.25
+  sor: 0.25
+  krw_max: 0.35
+  kro_max: 0.90
+  water_viscosity_cp: 0.45
+  oil_viscosity_cp: 1.2
+  gravity: true
+
+solver:
+  pml_nodes: 10
+  # The absorbing layer takes 10 x 12 = 120 m, so nothing may sit above 320 m.
+  record_length: 0.95
+
+source:
+  type: ricker
+  frequency: 12.0
+
+acquisition:
+  type: OBN
+  # Receivers 650 m above the target: 2.6 wavelengths at the 12 Hz peak,
+  # clear of the near-field zone that ruined an earlier demo at 0.55.
+  receiver_depth: 400.0
+  # 150 m, not 380. With both at ~390 m the sources and receivers sat 20 m
+  # apart and their injection near-fields occupied the same slab, which put
+  # a V-shaped bowl through the 600-1,000 m interval of the migrated
+  # section. Separating them by 250 m removes it and recovers 63 % more
+  # measured 4D signal - 17.64 % to 28.72 % NRMS in the target window on the
+  # line survey that established it. The absorbing layer claims the first
+  # 120 m of the domain, so 150 m is about as shallow as a source can sit.
+  source_depth: 150.0
+  receiver_spacing: 60.0
+  source_spacing: 200.0
+  source_line_spacing: 200.0
+
+imaging:
+  method: RTM
+  imaging_condition: source_normalized
+  laplacian_filter: true
+
+sim2seis:
+  map_to_depth: true
+  time_shifts: true
+  noise:
+    level: 0.05
+    repeatability: 0.75
+    seed: 7
+
+fourd:
+  scenarios: [baseline, combined]
+
+budget:
+  max_ram_gb: 8.0
+  max_disk_gb: 50.0
+  max_cost_class: HIGH
+
+output:
+  directory: runs

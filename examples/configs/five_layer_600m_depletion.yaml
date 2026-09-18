@@ -1,0 +1,189 @@
+# The five-layer model under depletion drive, with gas coming out of solution.
+#
+# Same earth as five_layer_600m, and deliberately the same in every respect
+# but the drive: one producer, no injector, and a bottom-hole pressure below
+# the oil's bubble point. That is the case the two-phase model could not
+# answer. It would take the pressure down, report a confident, correctly
+# shaped pressure halo, and show a gas saturation of exactly zero - because
+# it had no gas phase to put anything into, not because no gas came out.
+#
+# With `simulation.solution_gas` on, gas is liberated where the pressure
+# falls below the 558 psi bubble point the rock physics already implies, and
+# it is the flash that decides where and when rather than the user. The
+# liberated gas does not flow between cells, so the answer is quantitative
+# while the gas saturation stays under `critical_gas_saturation` and
+# indicative above it; QC says which regime the run ended in.
+#
+# The producer's BHP is 400 psi against a 558 psi bubble point and a 951 psi
+# initial pressure, so the reservoir crosses the bubble point during the
+# run rather than starting either side of it - which is what makes the
+# timing of the breakout an output worth reading.
+#
+project:
+  name: five_layer_600m_depletion
+  description: >
+    Five flat layers with a reflective, inert overburden above a thin 30 m
+    reservoir, produced to depletion by a single well until the oil crosses
+    its bubble point and gas comes out of solution.
+  seed: 1
+
+domains:
+  # 5 m vertical sampling: a 30 m reservoir on a 10 m grid is three cells,
+  # which is too few for the flow front and for the rock physics that reads it.
+  geology_bounds: [[0, 2000], [0, 2000], [0, 1200]]
+  geology_spacing: [25.0, 25.0, 5.0]
+  # 12 m isotropic. At Fmax 28.8 Hz and Vmin about 2,000 m/s the shortest
+  # wavelength is 70 m, sampled at 5.8 cells against the 5.25 an 8th-order
+  # operator needs.
+  propagation_bounds: [[0, 1992], [800, 1200], [0, 1000]]
+  # 8 m. QC warns that the slowest cell samples the shortest wavelength at
+  # 4.94 cells where an 8th-order operator wants 5.25 - about 1.2 % phase
+  # error instead of 1.0 %. Taken deliberately: 7.5 m would clear it and
+  # costs 1.3x the cells and 1.3x the steps, and both surveys disperse
+  # identically, so the error cancels in the 4D difference that this model
+  # exists to measure. It does not cancel in the baseline image, which is
+  # the part to read with the caveat.
+  propagation_spacing: [8.0, 8.0, 8.0]
+  target_bounds: [[200, 1400], [960, 1040], [520, 760]]
+
+geology:
+  template: five_layer
+  parameters:
+    extent: [2000.0, 2000.0, 1800.0]
+    # Reservoir top at 300 + 250 + 50 = 600 m.
+    overburden_shale: 300.0
+    upper_sand: 250.0
+    seal: 50.0
+    gross: 30.0
+    base_shale: 50.0
+    seed: 1
+
+rock_physics:
+  # 15, not the 100 the library defaults to. GOR is in m3/m3, so 100 is
+  # 562 scf/STB, whose bubble point by Standing is about 2,790 psi - and this
+  # reservoir never sees more than 1,303 psi, or less than 794. The oil would
+  # have been two-phase everywhere, always, while the flow model (which has no
+  # gas phase at all) carried it as single-phase liquid. 15 m3/m3 is 84
+  # scf/STB and Pb about 558 psi, below both the minimum reservoir pressure
+  # and the 600 psi producer BHP, so the two halves of the model agree.
+  #
+  # It is not cosmetic: the dissolved gas was softening the oil enough to
+  # inflate the 4D response by a fifth, from 2.06 % to 2.61 % |dAI|/AI.
+  gor: 15.0
+  dry_frame_model: soft_sand
+  critical_porosity: 0.40
+  coordination: 9.0
+  temperature: 60.0
+  facies:
+    shale:
+      dry_frame_model: stiff_sand
+      critical_porosity: 0.55
+      coordination: 6.0
+
+reservoir:
+  source: flow
+  baseline:
+    sw: 0.25
+    temperature: 60.0
+    pressure_gradient: 10500.0
+    datum_pressure: 101325.0
+
+wells:
+  wells:
+    - name: P1
+      role: producer
+      x: 1000.0
+      y: 1000.0
+      completions: [reservoir]
+      control: bhp
+      # 400 psi, below the 558 psi bubble point and well below the 951 psi
+      # the reservoir starts at. The well is on pressure control rather than
+      # rate so that the decline is the reservoir's answer and not a number
+      # imposed on it.
+      target: 400.0
+
+simulation:
+  duration_days: 1095.0
+  report_every_days: 45.625
+  max_timestep_days: 30.0
+  monitor_day: 1095.0
+  # The whole point of this configuration.
+  solution_gas: true
+  critical_gas_saturation: 0.02
+  swc: 0.25
+  sor: 0.25
+  krw_max: 0.35
+  kro_max: 0.90
+  water_viscosity_cp: 0.45
+  oil_viscosity_cp: 1.2
+  gravity: true
+
+solver:
+  pml_nodes: 10
+  # The absorbing layer takes 10 x 12 = 120 m, so nothing may sit above 320 m.
+  record_length: 0.70
+
+source:
+  type: ricker
+  # 18 Hz, not 12. A 600 m target needs the acquisition within 480 m of it,
+  # and at 12 Hz two wavelengths is 442 m - there is no room for both the
+  # standoff and the source-receiver separation. Halving the wavelength
+  # makes both fit; the cost is a finer grid, which dispersion sets.
+  frequency: 18.0
+
+acquisition:
+  type: OBN
+  # 650 m above the target: 2.6 wavelengths at the 12 Hz peak, clear of the
+  # near-field zone that ruined an earlier demo at 0.55.
+  receiver_depth: 300.0
+  # 150 m, not 380. With both at ~390 m the sources and receivers sat 20 m
+  # apart, so their injection near-fields occupied the same slab of model
+  # and reinforced each other - that band carried 0.41 RMS against the
+  # target's 0.048. Separating them by 250 m is the one variable this
+  # configuration changes against five_layer_2d; the receivers stay at
+  # 400 m so their 650 m standoff from the target is untouched and the
+  # comparison is clean.
+  #
+  # The absorbing layer claims the first 120 m of the domain, so 150 m is
+  # about as shallow as a source can legally sit.
+  source_depth: 120.0
+  receiver_spacing: 60.0
+  source_spacing: 100.0
+  source_line_spacing: 200.0
+  # Set explicitly: left unset these are derived from the target plus a
+  # margin on every side, and narrowing the target crossline to match the
+  # slab would shrink the inline footprint with it - two shots instead of
+  # eleven.
+  receiver_extent: 1820.0
+  source_extent: 1800.0
+  # A line, not a carpet. `source_extent_y` smaller than `source_line_spacing`
+  # leaves exactly one shot line at the survey centre; the receivers keep
+  # three lines either side of it, which costs nothing - the receiver
+  # wavefield is back-propagated as one field however many receivers are in
+  # it, so only the shot count multiplies the work.
+  receiver_extent_y: 120.0
+  source_extent_y: 1.0
+
+imaging:
+  method: RTM
+  imaging_condition: source_normalized
+  laplacian_filter: true
+
+sim2seis:
+  map_to_depth: true
+  time_shifts: true
+  noise:
+    level: 0.05
+    repeatability: 0.75
+    seed: 7
+
+fourd:
+  scenarios: [baseline, combined]
+
+budget:
+  max_ram_gb: 8.0
+  max_disk_gb: 50.0
+  max_cost_class: HIGH
+
+output:
+  directory: runs

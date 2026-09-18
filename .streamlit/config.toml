@@ -1,0 +1,18 @@
+# The chart palette was validated against the light chart surface (#fcfcfb).
+# A dark palette is a set of steps chosen for the dark surface, not an
+# inversion of the light one, so the theme is pinned rather than shipping an
+# unvalidated flip.
+[theme]
+base = "light"
+backgroundColor = "#f9f9f7"
+secondaryBackgroundColor = "#fcfcfb"
+textColor = "#0b0b0b"
+primaryColor = "#2a78d6"
+font = "sans serif"
+
+[server]
+headless = true
+fileWatcherType = "none"
+
+[browser]
+gatherUsageStats = false

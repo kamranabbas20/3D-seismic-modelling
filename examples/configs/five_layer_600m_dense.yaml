@@ -1,0 +1,230 @@
+# =====================================================================
+# The 600 m five-layer model, shot densely enough to migrate.
+#
+# five_layer_600m shoots 19 sources at 100 m and 93 receivers at 60 m. At
+# the target that survey subtends 69 degrees, where the operator aliasing
+# limit V / (4 f_max sin theta) is 18.5 m - so the shots are 5.4x too
+# coarse and the receivers 3.2x. An operator sampled that coarsely leaves
+# each shot's isochrone in the image instead of cancelling it against its
+# neighbours', which is exactly the arcs that filled the migrated section,
+# and with 19 shots there are not enough neighbours to cancel anything.
+#
+# Three measured facts ruled out the alternatives before this file existed:
+#
+#   - it is not the velocity. Smoothing by 150 m left the arcs at 0.0367 ->
+#     0.0283 while halving the reflector, 0.1118 -> 0.0556, and moving it
+#     90 m.
+#   - it is not the direct arrival. On demo_small it was 0.7 % of gather
+#     energy and muting it changed the image by 0.03 % of peak.
+#   - it is not the near-field, and it is not poor repeatability. The 4D
+#     difference GATHER carries zero energy before 180 ms and 0.000142
+#     against a baseline 7.08 in the overburden window, so nothing recorded
+#     can put an artefact above the reservoir. The migration is linear in
+#     the data here - the migration velocity is built from the baseline
+#     earth for both surveys, so the source wavefield is identical and
+#     I_mon - I_base = M(d_mon - d_base). The arcs in the 4D difference are
+#     the operator's own impulse response to the reservoir anomaly.
+#
+# What changes here, and nothing else does:
+#
+#   source_spacing   100 -> 25 m    73 shots instead of 19
+#   receiver_spacing  60 -> 20 m    free: the receiver wavefield is
+#                                   back-propagated as one field however
+#                                   many receivers are in it
+#   imaging.max_offset    -> 580 m  limits the aperture to 40 degrees
+#
+# The aperture limit is what makes 25 m enough. At 40 degrees the limit is
+# 26.9 m rather than 18.5, because the limit is set by the steepest angle
+# the migration actually sums and a long line subtends a wide one at its
+# ends whether or not those traces carry anything. 580 m is 2 h tan(40) for
+# h = 346 m of standoff. Below 25 degrees a flat reflector images as arcs
+# for a different reason, so 40 leaves room.
+#
+# The earth, the wells and the flow are identical to five_layer_600m,
+# including the 1,380 psi injector limit that keeps it below fracture.
+# =====================================================================
+
+project:
+  name: five_layer_600m_dense
+  description: >
+    Five flat layers with a reflective, inert overburden above a thin 30 m
+    reservoir; one injector and one producer 600 m apart, three years,
+    imaged by 1D convolution and by full-wave modelling with RTM.
+  seed: 1
+
+domains:
+  # 5 m vertical sampling: a 30 m reservoir on a 10 m grid is three cells,
+  # which is too few for the flow front and for the rock physics that reads it.
+  geology_bounds: [[0, 2000], [0, 2000], [0, 1200]]
+  geology_spacing: [25.0, 25.0, 5.0]
+  # 12 m isotropic. At Fmax 28.8 Hz and Vmin about 2,000 m/s the shortest
+  # wavelength is 70 m, sampled at 5.8 cells against the 5.25 an 8th-order
+  # operator needs.
+  propagation_bounds: [[0, 1992], [800, 1200], [0, 1000]]
+  # 8 m. QC warns that the slowest cell samples the shortest wavelength at
+  # 4.94 cells where an 8th-order operator wants 5.25 - about 1.2 % phase
+  # error instead of 1.0 %. Taken deliberately: 7.5 m would clear it and
+  # costs 1.3x the cells and 1.3x the steps, and both surveys disperse
+  # identically, so the error cancels in the 4D difference that this model
+  # exists to measure. It does not cancel in the baseline image, which is
+  # the part to read with the caveat.
+  propagation_spacing: [8.0, 8.0, 8.0]
+  target_bounds: [[200, 1400], [960, 1040], [520, 760]]
+
+geology:
+  template: five_layer
+  parameters:
+    extent: [2000.0, 2000.0, 1800.0]
+    # Reservoir top at 300 + 250 + 50 = 600 m.
+    overburden_shale: 300.0
+    upper_sand: 250.0
+    seal: 50.0
+    gross: 30.0
+    base_shale: 50.0
+    seed: 1
+
+rock_physics:
+  # 15, not the 100 the library defaults to. GOR is in m3/m3, so 100 is
+  # 562 scf/STB, whose bubble point by Standing is about 2,790 psi - and this
+  # reservoir never sees more than 1,303 psi, or less than 794. The oil would
+  # have been two-phase everywhere, always, while the flow model (which has no
+  # gas phase at all) carried it as single-phase liquid. 15 m3/m3 is 84
+  # scf/STB and Pb about 558 psi, below both the minimum reservoir pressure
+  # and the 600 psi producer BHP, so the two halves of the model agree.
+  #
+  # It is not cosmetic: the dissolved gas was softening the oil enough to
+  # inflate the 4D response by a fifth, from 2.06 % to 2.61 % |dAI|/AI.
+  gor: 15.0
+  dry_frame_model: soft_sand
+  critical_porosity: 0.40
+  coordination: 9.0
+  temperature: 60.0
+  facies:
+    shale:
+      dry_frame_model: stiff_sand
+      critical_porosity: 0.55
+      coordination: 6.0
+
+reservoir:
+  source: flow
+  baseline:
+    sw: 0.25
+    temperature: 60.0
+    pressure_gradient: 10500.0
+    datum_pressure: 101325.0
+
+wells:
+  wells:
+    - name: I1
+      role: injector
+      x: 700.0
+      y: 1000.0
+      completions: [reservoir]
+      control: water_rate
+      target: 12000.0
+      # The fracture pressure at 615 m is 1,412 psi on a 0.7 psi/ft gradient,
+      # against an initial 951 psi from this file's own 10,500 Pa/m. The
+      # limit was 2,400 psi - the value from the 1,050 m version of this
+      # model, carried over unchanged - and the injector ran at 2,013 psi,
+      # some 600 psi above fracture. It inflated the whole reservoir by 199
+      # to 911 psi, and because a pressure rise softens the rock while water
+      # replacing oil stiffens it, the two changes cancelled inside the
+      # flood and left the biggest impedance change on the *unswept* rock:
+      # 7.8 % outside the flood against 2.1 % inside it. The 4D was
+      # measuring the overpressure, not the waterflood.
+      bhp_limit_psi: 1380.0
+    - name: P1
+      role: producer
+      x: 1300.0
+      y: 1000.0
+      completions: [reservoir]
+      control: liquid_rate
+      target: 12000.0          # VRR 1.0
+      bhp_limit_psi: 600.0
+
+simulation:
+  duration_days: 1095.0
+  report_every_days: 45.625
+  max_timestep_days: 30.0
+  monitor_day: 1095.0
+  swc: 0.25
+  sor: 0.25
+  krw_max: 0.35
+  kro_max: 0.90
+  water_viscosity_cp: 0.45
+  oil_viscosity_cp: 1.2
+  gravity: true
+
+solver:
+  pml_nodes: 10
+  # The absorbing layer takes 10 x 12 = 120 m, so nothing may sit above 320 m.
+  record_length: 0.70
+
+source:
+  type: ricker
+  # 18 Hz, not 12. A 600 m target needs the acquisition within 480 m of it,
+  # and at 12 Hz two wavelengths is 442 m - there is no room for both the
+  # standoff and the source-receiver separation. Halving the wavelength
+  # makes both fit; the cost is a finer grid, which dispersion sets.
+  frequency: 18.0
+
+acquisition:
+  type: OBN
+  # 650 m above the target: 2.6 wavelengths at the 12 Hz peak, clear of the
+  # near-field zone that ruined an earlier demo at 0.55.
+  receiver_depth: 300.0
+  # 150 m, not 380. With both at ~390 m the sources and receivers sat 20 m
+  # apart, so their injection near-fields occupied the same slab of model
+  # and reinforced each other - that band carried 0.41 RMS against the
+  # target's 0.048. Separating them by 250 m is the one variable this
+  # configuration changes against five_layer_2d; the receivers stay at
+  # 400 m so their 650 m standoff from the target is untouched and the
+  # comparison is clean.
+  #
+  # The absorbing layer claims the first 120 m of the domain, so 150 m is
+  # about as shallow as a source can legally sit.
+  source_depth: 120.0
+  receiver_spacing: 20.0
+  source_spacing: 25.0
+  source_line_spacing: 200.0
+  # Set explicitly: left unset these are derived from the target plus a
+  # margin on every side, and narrowing the target crossline to match the
+  # slab would shrink the inline footprint with it - two shots instead of
+  # eleven.
+  receiver_extent: 1820.0
+  source_extent: 1800.0
+  # A line, not a carpet. `source_extent_y` smaller than `source_line_spacing`
+  # leaves exactly one shot line at the survey centre; the receivers keep
+  # three lines either side of it, which costs nothing - the receiver
+  # wavefield is back-propagated as one field however many receivers are in
+  # it, so only the shot count multiplies the work.
+  receiver_extent_y: 120.0
+  source_extent_y: 1.0
+
+imaging:
+  method: RTM
+  imaging_condition: source_normalized
+  laplacian_filter: true
+  # 2 h tan(40 deg) for h = 346 m of standoff: the aperture limit that makes
+  # 25 m shot spacing sample the operator rather than alias it.
+  max_offset: 580.0
+  offset_taper: 120.0
+
+sim2seis:
+  map_to_depth: true
+  time_shifts: true
+  noise:
+    level: 0.05
+    repeatability: 0.75
+    seed: 7
+
+fourd:
+  scenarios: [baseline, combined]
+
+budget:
+  max_ram_gb: 8.0
+  max_disk_gb: 50.0
+  max_cost_class: HIGH
+
+output:
+  directory: runs

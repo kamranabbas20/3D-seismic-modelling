@@ -1,0 +1,173 @@
+# The 40-degree dipping trap, with gas coming out of solution.
+#
+# Same earth, same two wells, same three years as dipping_wedge_4d. Two
+# things change, and the first is a correction rather than a variation.
+#
+# GOR 60, not the library default of 100. At 100 m3/m3 and 85 degC the
+# bubble point is 3,070 psi, and this reservoir spans 2,427 psi updip to
+# 3,724 psi downdip - so exactly half of it started below its own bubble
+# point, before anything was produced, while the baseline state carried
+# Sg = 0 everywhere and no gas-oil contact. A 40-degree trap half below
+# bubble point has a gas cap at its crest; this one had nothing. 60 m3/m3
+# puts Pb at 2,000 psi, below the lowest initial pressure, so the oil
+# starts single-phase everywhere and the gas that appears later is
+# produced by the production rather than assumed by the configuration.
+#
+# The second change is the producer's control, and it is there because the
+# first version of this file did not need it and produced nothing. On the
+# original 2,250 STB/day against VRR 0.98 injection, the producer settles
+# at 2,132 psi and the lowest pressure anywhere in the reservoir after
+# three years is 2,080 psi - both above the 2,000 psi bubble point. Peak
+# gas saturation: exactly 0.000, and QC passes.
+#
+# That is the right answer, and it is worth stating before the interesting
+# one: a voidage-balanced waterflood keeps the oil single-phase, and no
+# amount of gas modelling will make gas appear in it. To study the gas at
+# all the well has to be drawn down through the bubble point, so here the
+# producer is on pressure control at 1,400 psi instead - 600 psi below Pb,
+# against 2,660 psi initial pressure at its own sand depth. The injector is
+# unchanged, so the water front still advances up the flank and the two
+# effects are in the same run rather than in two.
+#
+# The dip is the reason to run this case at all, and it cuts both ways.
+# Gas liberated at the producer is already at the structural crest, so
+# holding it in place costs little - there is nowhere updip for it to go.
+# Gas liberated anywhere downdip of the producer wants to migrate up the
+# 40-degree flank and cannot, and this model will leave it where it formed.
+# The run reports how much of the reservoir passed the critical gas
+# saturation, which is how far that second case has gone.
+#
+project:
+  name: dipping_wedge_gas
+  description: >
+    40-degree dipping shale-sand-shale trap at 2,000 m with an oil-water
+    contact, water injected downdip and oil produced updip over three
+    years, with solution gas coming out below the bubble point.
+  seed: 1
+
+domains:
+  # The cell size is set by the dip, not by the seismic. A bed of thickness
+  # `gross` dipping at `theta` drops dx*tan(theta) per lateral cell, so
+  # adjacent columns of sand only overlap by gross - dx*tan(theta). At 40
+  # degrees and dx = 20 m that overlap is 3 m against a 20 m bed, and on a
+  # 5 m vertical grid a third of the column pairs then share no cell at
+  # all: the reservoir becomes a disconnected staircase, the wells lose
+  # pressure communication, and the material balance still closes while the
+  # answer is wrong. dx = 10 m and dz = 4 m leave ~3 cells of overlap.
+  #
+  # 1,000 m of dip length carries 839 m of relief, so the sand runs from
+  # 1,580 m updip to 2,420 m downdip.
+  geology_bounds: [[0, 1000], [0, 1400], [0, 2900]]
+  geology_spacing: [10.0, 50.0, 4.0]
+  # Nothing varies along y - the dip is along x - so the geology is sampled
+  # coarsely there. The propagation grid is not: a 10-node absorbing layer
+  # costs 10 * dy of real distance per face, so a coarse dy would spend most
+  # of the model on sponge.
+  propagation_bounds: [[40, 960], [40, 1360], [480, 2820]]
+  propagation_spacing: [10.0, 20.0, 10.0]
+  # The imaging window covers the middle of the dip range, including the
+  # contact at x = 560 m, and leaves the survey room to reach past it.
+  target_bounds: [[250, 750], [500, 900], [1500, 2500]]
+
+geology:
+  template: three_layer
+  parameters:
+    extent: [1000.0, 1400.0, 2900.0]
+    z_reservoir: 2000.0
+    gross: 20.0
+    dip: 40.0
+    azimuth: 90.0        # dips towards +x, so +x is downdip
+    seed: 1
+
+# One global dry frame makes the shale slower than the reservoir sand and
+# leaves the top of the sand with almost no impedance contrast. A stiff
+# frame for the shale restores it.
+rock_physics:
+  # See the header: 100 put half the reservoir below its bubble point at
+  # day zero with no gas anywhere to show for it.
+  gor: 60.0
+  dry_frame_model: soft_sand
+  critical_porosity: 0.40
+  coordination: 9.0
+  temperature: 85.0
+  facies:
+    shale:
+      dry_frame_model: stiff_sand
+      critical_porosity: 0.55
+      coordination: 6.0
+
+reservoir:
+  source: flow
+  baseline:
+    sw: 0.18           # irreducible water in the oil column
+    temperature: 85.0
+    pressure_gradient: 10500.0
+    datum_pressure: 101325.0
+    owc: 2050.0        # cuts the sand at x = 560 m
+    transition: 15.0   # a thin capillary transition, not a sharp step
+
+wells:
+  wells:
+    # Updip, in the oil leg: sand at 1,748-1,768 m here.
+    - name: P1
+      role: producer
+      x: 200.0
+      y: 700.0
+      completions: [reservoir]
+      # Pressure control, not rate: the decline is then the reservoir's
+      # answer rather than a number imposed on it, and 1,400 psi is 600 psi
+      # below the bubble point so the drawdown cone is guaranteed to cross
+      # it. See the header for what the original 2,250 STB/day did.
+      control: bhp
+      target: 1400.0
+    # Downdip, in the water leg: sand at 2,252-2,272 m here.
+    - name: I1
+      role: injector
+      x: 800.0
+      y: 700.0
+      completions: [reservoir]
+      control: water_rate
+      target: 2200.0          # STB/day, VRR 0.98
+      bhp_limit_psi: 4000.0   # above the 3,445 psi at its own sand depth
+
+simulation:
+  duration_days: 1095.0      # three years
+  report_every_days: 45.625
+  max_timestep_days: 30.0
+  monitor_day: 1095.0
+  solution_gas: true
+  critical_gas_saturation: 0.02
+  swc: 0.18
+  sor: 0.25
+  krw_max: 0.35
+  kro_max: 0.90
+  water_viscosity_cp: 0.45
+  oil_viscosity_cp: 1.1
+  gravity: true
+
+solver:
+  pml_nodes: 10
+
+acquisition:
+  type: OBN
+  # The propagation domain starts at 480 m and the absorbing layer takes
+  # the first 100 m of it, so nothing may sit above 580 m.
+  receiver_depth: 620.0
+  source_depth: 600.0
+  receiver_spacing: 40.0
+  source_spacing: 80.0
+
+source:
+  type: ormsby
+  corners: [6.0, 12.0, 40.0, 55.0]
+
+sim2seis:
+  map_to_depth: true
+  time_shifts: true
+  noise:
+    level: 0.06
+    repeatability: 0.7
+    seed: 11
+
+fourd:
+  scenarios: [baseline, pressure_only, saturation_only, combined]
