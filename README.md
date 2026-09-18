@@ -122,7 +122,7 @@ activate, prefix each one with `.venv/bin/` (Unix) or `.venv\Scripts\`
 (Windows).
 
 ```bash
-pytest -q                                            # 417 tests, ~75 s — the real proof
+pytest -q                                            # 740 tests — the real proof
 sim3d physics                                        # what each mode does and does not model
 sim3d benchmark                                      # measure this machine
 sim3d describe    examples/configs/demo_small.yaml
@@ -623,7 +623,7 @@ src/sim3d/
   ui/            the Streamlit front end, its display components and the
                  3D scene
   cli.py
-tests/           417 tests, ~75 seconds
+tests/           740 tests
 examples/configs/
 docs/
 ```
@@ -688,7 +688,7 @@ or a literature measurement — never against a stored output of this code.
   estimate with no bound status.
 
 ```bash
-pytest -q                    # 417 tests, ~75 s (includes the section 131 null test)
+pytest -q                    # 740 tests (includes the section 131 null test)
 ```
 
 Unactivated, that is `.venv/bin/pytest -q` on Unix and
